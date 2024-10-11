@@ -6,7 +6,9 @@ This repository aims to predict rental prices in various regions of Italy using 
   - [Table of Contents](#table-of-contents)
   - [Introduction](#introduction)
   - [Installation](#installation)
+  - [Data Collection](#data-collection)
   - [Usage](#usage)
+  - [Sample Plots](#sample-plots)
   - [Plans](#plans)
   - [Contributing](#contributing)
   - [License](#license)
@@ -21,21 +23,26 @@ To get started with this project, clone the repository and install the necessary
 git clone https://github.com/yourusername/italy-rent-prediction.git
 cd italy-rent-prediction
 pip install -r requirements.txt
+
+Alternatively, make changes on the notebook directly after cloning.
 ```
+## Data Collection
+All the data is collected from
+https://www.kaggle.com/datasets/tommasoramella/italy-house-prices/data.
 
 ## Usage
-The project is not done yet.
+The project is not complete yet.
 
 ## Sample Plots
-[![download](https://i.ibb.co/89Gx4hN/download.png)](https://ibb.co/Zxvg1ZG)
-[![download-1](https://i.ibb.co/BrN3GF6/download-1.png)](https://ibb.co/TbL21d0)
-[![newplot](https://i.ibb.co/3dmjXLs/newplot.png)](https://ibb.co/4tRXy5f)
+[![Distribution of Rent Prices](https://i.ibb.co/89Gx4hN/download.png)](https://ibb.co/Zxvg1ZG)
+[![Rent Price vs Area](https://i.ibb.co/BrN3GF6/download-1.png)](https://ibb.co/TbL21d0)
+[![Flats in each city](https://i.ibb.co/3dmjXLs/newplot.png)](https://ibb.co/4tRXy5f)
 
 ## Plans
-- Implement more plots to better visualize data
-- Develop and train ML models to predict prices
+- ~~Implement more plots to better visualize data~~
+- ~~Develop and train ML models to predict prices~~
+- Improve the predictibility of the trained Models
 - Create a web interface for user interaction
-- Add more features to improve prediction accuracy
 
 ## Contributing
 Contributions are welcome!
