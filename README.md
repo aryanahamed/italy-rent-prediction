@@ -26,6 +26,11 @@ pip install -r requirements.txt
 ## Usage
 The project is not done yet.
 
+## Sample Plots
+[![download](https://i.ibb.co/89Gx4hN/download.png)](https://ibb.co/Zxvg1ZG)
+[![download-1](https://i.ibb.co/BrN3GF6/download-1.png)](https://ibb.co/TbL21d0)
+[![newplot](https://i.ibb.co/3dmjXLs/newplot.png)](https://ibb.co/4tRXy5f)
+
 ## Plans
 - Implement more plots to better visualize data
 - Develop and train ML models to predict prices
