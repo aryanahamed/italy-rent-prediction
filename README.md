@@ -34,9 +34,10 @@ https://www.kaggle.com/datasets/tommasoramella/italy-house-prices/data.
 The project is not complete yet.
 
 ## Sample Plots
-[![Distribution of Rent Prices](https://i.ibb.co/89Gx4hN/download.png)](https://ibb.co/Zxvg1ZG)
-[![Rent Price vs Area](https://i.ibb.co/BrN3GF6/download-1.png)](https://ibb.co/TbL21d0)
+[![Heatmap](https://i.ibb.co/Lz79PC8/output.png)](https://ibb.co/kgCqyhx)
+[![Rent Price vs Area](https://i.ibb.co/C1wh61T/output2.png)](https://ibb.co/Tvwm1vF)
 [![Flats in each city](https://i.ibb.co/3dmjXLs/newplot.png)](https://ibb.co/4tRXy5f)
+
 
 ## Plans
 - ~~Implement more plots to better visualize data~~
