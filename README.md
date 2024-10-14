@@ -4,7 +4,6 @@ This repository aims to predict rental prices in various regions of Italy using 
 ## Table of Contents
 - [Italy Rent Prediction](#italy-rent-prediction)
   - [Table of Contents](#table-of-contents)
-  - [Introduction](#introduction)
   - [Installation](#installation)
   - [Data Collection](#data-collection)
   - [Usage](#usage)
@@ -13,9 +12,6 @@ This repository aims to predict rental prices in various regions of Italy using 
   - [Contributing](#contributing)
   - [License](#license)
 
-## Introduction
-This project is designed to help users estimate rental prices in Italy based on various factors such as location, property size, and amenities. The goal is to provide accurate predictions to assist both renters and property owners.
-
 ## Installation
 To get started with this project, clone the repository and install the necessary dependencies:
 
@@ -23,9 +19,9 @@ To get started with this project, clone the repository and install the necessary
 git clone https://github.com/yourusername/italy-rent-prediction.git
 cd italy-rent-prediction
 pip install -r requirements.txt
-
-Alternatively, make changes on the notebook directly after cloning.
 ```
+Alternatively, make changes on the notebook directly after cloning.
+
 ## Data Collection
 All the data is collected from
 https://www.kaggle.com/datasets/tommasoramella/italy-house-prices/data.
