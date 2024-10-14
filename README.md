@@ -15,7 +15,7 @@ This repository aims to analyse and predict rent prices  in various regions of I
 To get started with this project, clone the repository and install the necessary dependencies:
 
 ```bash
-git clone https://github.com/yourusername/italy-rent-prediction.git
+git clone https://github.com/aryanahamed/italy-rent-prediction.git
 cd italy-rent-prediction
 pip install -r requirements.txt
 ```
