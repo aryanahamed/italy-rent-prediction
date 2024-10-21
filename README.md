@@ -3,6 +3,7 @@ This repository aims to analyse and predict rent prices  in various regions of I
 
 ## Table of Contents
 - [Italy Rent Prediction](#italy-rent-prediction)
+  - [Table of Contents](#table-of-contents)
   - [Installation](#installation)
   - [Data Collection](#data-collection)
   - [Usage](#usage)
@@ -37,8 +38,8 @@ The project is not complete yet.
 ## Plans
 - ~~Implement more plots to better visualize data~~
 - ~~Develop and train ML models to predict prices~~
+- ~~Create a web interface for user interaction~~
 - Improve the predictibility of the trained Models
-- Create a web interface for user interaction
 
 ## Contributing
 Contributions are welcome!
