@@ -1,5 +1,5 @@
 # Italy Rent Prediction
-This repository aims to analyse and predict rent prices  in various regions of Italy using machine learning algorithms.
+This repository aims to analyse and predict rent prices  in various regions of Italy using machine learning algorithms. This is a fun hobby project.
 
 ## Table of Contents
 - [Italy Rent Prediction](#italy-rent-prediction)
@@ -8,7 +8,6 @@ This repository aims to analyse and predict rent prices  in various regions of I
   - [Data Collection](#data-collection)
   - [Usage](#usage)
   - [Sample Plots](#sample-plots)
-  - [Plans](#plans)
   - [Contributing](#contributing)
   - [License](#license)
 
@@ -23,11 +22,15 @@ pip install -r requirements.txt
 Alternatively, make changes on the notebook directly after cloning.
 
 ## Data Collection
-All the data is collected from
+All the data is collected from the following database.
+
 https://www.kaggle.com/datasets/tommasoramella/italy-house-prices/data.
 
 ## Usage
-The project is not complete yet.
+Check the following page to try out the model.
+
+[Italy Rent Prediction](https://italy-rent-prediction.streamlit.app/)
+
 
 ## Sample Plots
 [![Heatmap](https://i.ibb.co/Lz79PC8/output.png)](https://ibb.co/kgCqyhx)
@@ -35,14 +38,8 @@ The project is not complete yet.
 [![Flats in each city](https://i.ibb.co/3dmjXLs/newplot.png)](https://ibb.co/4tRXy5f)
 
 
-## Plans
-- ~~Implement more plots to better visualize data~~
-- ~~Develop and train ML models to predict prices~~
-- ~~Create a web interface for user interaction~~
-- Improve the predictibility of the trained Models
-
 ## Contributing
-Contributions are welcome!
+Contributions are welcome and appreciated!
 
 ## License
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
