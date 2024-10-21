@@ -2,7 +2,7 @@ import streamlit as st
 import joblib
 import numpy as np
 
-model = joblib.load('rent_model.pkl')
+model = joblib.load('rent_prediction_model/rent_model.pkl')
 
 st.title('Predict Rent Prices in Italy 🇮🇹')
 
