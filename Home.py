@@ -129,10 +129,9 @@ if submit_button:
     electric_gate = get_binary_value(electric_gate)
     top_floor = get_binary_value(top_floor)
     central_heating = get_binary_value(central_heating)
-    
+
     condition_feature = 1 if condition == 'Excellent/Renovated' else 0
     energy_class_feature = ENERGY_CLASS_MAP[selected_energy_class]
-    print(selected_energy_class, energy_class_feature)
     furnished_and_central_heating = 1 if furnished and central_heating == 'Yes' else 0
     encoded_features = encode_categorical(selected_region, selected_city)
     building_layout = calculate_building_layout(cellar, top_floor)
