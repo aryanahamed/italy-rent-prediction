@@ -123,7 +123,7 @@ if submit_button:
     external_exposure, fiber_optic, electric_gate, shared_garden, 
     building_layout, furnished_and_central_heating] + encoded_features + [condition_feature]])
     prediction = model.predict(features)
-    st.header(f'Predicted Rent Price: €{np.expm1(prediction[0]):.2f}')
+    st.header(f'Predicted Rent Price: :blue[_€{np.expm1(prediction[0]):.2f}_]', anchor=None)
     
     
     margin_of_error = 0.18176699637336002
@@ -135,5 +135,5 @@ if submit_button:
     lower_bound_original = np.expm1(lower_bound_log)
     upper_bound_original = np.expm1(upper_bound_log)
     
-    st.header(f"Predicted Range: €{lower_bound_original:.2f} - €{upper_bound_original:.2f}")
+    st.header(f"Predicted Range: :blue[_€{lower_bound_original:.2f}_ - _€{upper_bound_original:.2f}_]", anchor=None)
 
