@@ -1,16 +1,6 @@
 # Italy Rent Prediction
 This repository aims to analyse and predict rent prices  in various regions of Italy using machine learning algorithms. This is a fun hobby project.
 
-## Table of Contents
-- [Italy Rent Prediction](#italy-rent-prediction)
-  - [Table of Contents](#table-of-contents)
-  - [Installation](#installation)
-  - [Data Collection](#data-collection)
-  - [Usage](#usage)
-  - [Sample Plots](#sample-plots)
-  - [Contributing](#contributing)
-  - [License](#license)
-
 ## Installation
 To get started with this project, clone the repository and install the necessary dependencies:
 
