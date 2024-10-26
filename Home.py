@@ -2,51 +2,27 @@ import time
 import streamlit as st
 import joblib
 import numpy as np
+import requests
 
-model = joblib.load('rent_prediction_model/rent_model.pkl')
 
-MARGIN_OF_ERROR = 0.18176699637336002
-REGION_CITY_MAP = {
-    'Lombardia': ['Milano', 'Bergamo', 'Brescia', 'Como', 'Cremona'],
-    'Lazio': ['Roma', 'Frosinone', 'Latina', 'Rieti', 'Viterbo'],
-    'Campania': ['Napoli', 'Avellino', 'Benevento', 'Caserta', 'Salerno'],
-    'Sicily': ['Palermo', 'Catania', 'Messina', 'Syracuse', 'Trapani'],
-    'Veneto': ['Venice', 'Verona', 'Padua', 'Vicenza', 'Treviso'],
-    'Emilia-Romagna': ['Bologna', 'Parma', 'Modena', 'Ravenna', 'Reggio Emilia'],
-    'Piemonte': ['Torino', 'Alessandria', 'Asti', 'Biella', 'Cuneo'],
-    'Tuscany': ['Firenze', 'Pisa', 'Siena', 'Arezzo', 'Lucca'],
-    'Apulia': ['Bari', 'Brindisi', 'Foggia', 'Lecce', 'Taranto'],
-    'Calabria': ['Catanzaro', 'Cosenza', 'Reggio Calabria', 'Crotone', 'Vibo Valentia'],
-    'Other': ['Other']
-}
-REGIONS = list(REGION_CITY_MAP.keys())
+model = joblib.load('rent_prediction_model/rent_model_v2.pkl')
+
+MARGIN_OF_ERROR = 0.1450747496597613
+
 ENERGY_CLASSES = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
 
 ENERGY_CLASS_MAP = {
-    'A': 5,
-    'B': 4,
-    'C': 3,
-    'D': 2,
-    'E': 1,
-    'F': 0,
-    'G': 0
+    'A': 1.0,
+    'B': 0.6,
+    'C': 0.3,
+    'D': 0.0,
+    'E': -0.2,
+    'F': -0.5,
+    'G': -1.0
 }
 
 st.title('Predict Rent Prices in Italy 🇮🇹', anchor=False)
 
-def update_city_options():
-    """Update city options based on selected region."""
-    st.session_state.city = REGION_CITY_MAP[st.session_state.region][0]
-
-def encode_categorical(selected_region, selected_city):
-    """Encode categorical features for region and city."""
-    region_columns = ['Emilia-Romagna', 'Lazio', 'Lombardy', 'Piemonte']
-    city_columns = ['Genova', 'Milano', 'Other', 'Roma', 'Torino']
-    
-    region_encoded = [1 if col == selected_region else 0 for col in region_columns]
-    city_encoded = [1 if col == selected_city else 0 for col in city_columns]
-    
-    return region_encoded + city_encoded
 
 def get_binary_value(option):
     """Convert 'Yes'/'No' to binary 1/0."""
@@ -76,16 +52,31 @@ def predict_rent(features):
     
     return euro_est, lower_bound, upper_bound
 
-# Initialize session state
-if 'region' not in st.session_state:
-    st.session_state.region = REGIONS[0]
-    st.session_state.city = REGION_CITY_MAP[REGIONS[0]][0]
     
-col1, col2 = st.columns(2)
-with col1:
-    selected_region = st.selectbox('Region', options=REGIONS, key='region', on_change=update_city_options)
-with col2:
-    selected_city = st.selectbox('City', options=REGION_CITY_MAP[st.session_state.region], key='city')
+
+address = st.text_input('Search your desired neighborhood (For better results add city with the name)', key='address')
+
+if address:
+    photon_url = f"https://photon.komoot.io/api/?q={address} Italy&limit=5"
+    response = requests.get(photon_url)
+    
+    if response.status_code == 200:
+        suggestions = response.json()['features']
+        
+        if suggestions:
+            options = [f"{place['properties']['name']}, {place['properties']['country']}" for place in suggestions]
+            selected_option = st.selectbox("Select an option", options)
+            
+            selected_place = suggestions[options.index(selected_option)]
+            lat = selected_place['geometry']['coordinates'][1]
+            lon = selected_place['geometry']['coordinates'][0]
+
+            st.session_state['latitude'] = lat
+            st.session_state['longitude'] = lon
+        else:
+            st.write("No suggestions found. Please refine your search.")
+    else:
+        st.write("Error fetching location suggestions.")
 
 with st.form(key='rent_form'):
     col3, col4 = st.columns(2)
@@ -133,14 +124,13 @@ if submit_button:
     condition_feature = 1 if condition == 'Excellent/Renovated' else 0
     energy_class_feature = ENERGY_CLASS_MAP[selected_energy_class]
     furnished_and_central_heating = 1 if furnished and central_heating == 'Yes' else 0
-    encoded_features = encode_categorical(selected_region, selected_city)
     building_layout = calculate_building_layout(cellar, top_floor)
     
     features = np.array([[
         parking_spots, bathrooms, rooms, energy_class_feature, 
         central_heating, area, furnished, balcony, 
         external_exposure, fiber_optic, electric_gate, shared_garden, 
-        building_layout, furnished_and_central_heating] + encoded_features + [condition_feature]])
+        building_layout, furnished_and_central_heating] + [lat, lon, lat, lon, lat, lon] + [condition_feature]])
     
     # Add progress bar
     progress_bar = st.progress(0)
