@@ -5,7 +5,11 @@ import numpy as np
 import requests
 
 
-model = joblib.load('rent_prediction_model/rent_model_v2.pkl')
+@st.cache
+def load_model():
+	  return joblib.load('rent_prediction_model/rent_model_v2.pkl')
+    
+model = load_model()
 
 MARGIN_OF_ERROR = 0.1450747496597613
 
