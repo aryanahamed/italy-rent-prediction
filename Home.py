@@ -5,7 +5,7 @@ import numpy as np
 import requests
 
 
-@st.cache
+@st.cache_resource(ttl=3600)
 def load_model():
 	  return joblib.load('rent_prediction_model/rent_model_v2.pkl')
     
