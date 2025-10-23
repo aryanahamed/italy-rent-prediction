@@ -3,12 +3,16 @@ import streamlit as st
 import joblib
 import numpy as np
 import requests
+import folium
+from folium.plugins import HeatMap
+from streamlit_folium import st_folium
 from config import ENERGY_CLASSES, ENERGY_CLASS_MAP, MARGIN_OF_ERROR
 from prediction_utils import (
     PredictionAnalyzer,
     format_confidence_level,
     format_contribution_text
 )
+from map_data import load_neighborhood_price_data, get_italy_center_coords
 
 
 @st.cache_resource(ttl=3600)
@@ -32,6 +36,10 @@ def load_prediction_analyzer():
     
 model = load_model()
 analyzer = load_prediction_analyzer()
+
+# Initialize session state for predictions
+if 'prediction_results' not in st.session_state:
+    st.session_state.prediction_results = None
 
 st.title('Predict Rent Prices in Italy 🇮🇹', anchor=False)
 
@@ -197,72 +205,183 @@ if submit_button:
     if result[0] is not None:
         euro_est, lower_bound, upper_bound, confidence_score, top_contributors = result
         
-        # Display main prediction
-        st.success("Prediction successful!")
-        st.header(f'Predicted Rent Price: €{euro_est:.0f}', anchor=False)
+        # Store results in session state
+        st.session_state.prediction_results = {
+            'euro_est': euro_est,
+            'lower_bound': lower_bound,
+            'upper_bound': upper_bound,
+            'confidence_score': confidence_score,
+            'top_contributors': top_contributors,
+            'address': st.session_state.get('address', 'Unknown')
+        }
+
+# Display prediction results if they exist in session state
+if st.session_state.prediction_results is not None:
+    results = st.session_state.prediction_results
+    euro_est = results['euro_est']
+    lower_bound = results['lower_bound']
+    upper_bound = results['upper_bound']
+    confidence_score = results['confidence_score']
+    top_contributors = results['top_contributors']
+    
+    # Display main prediction
+    st.success("Prediction successful!")
+    st.header(f'Predicted Rent Price: €{euro_est:.0f}', anchor=False)
+    
+    # Display confidence score with visual indicator
+    confidence_level = format_confidence_level(confidence_score)
+    col_conf1, col_conf2 = st.columns([2, 1])
+    
+    with col_conf1:
+        st.subheader(f"Confidence: {confidence_level}", anchor=False)
+        st.progress(confidence_score / 100)
+    
+    with col_conf2:
+        st.metric("Confidence Score", f"{confidence_score:.1f}%")
+    
+    # Display prediction range
+    st.subheader(f"95% Confidence Interval: €{lower_bound:.0f} - €{upper_bound:.0f}", anchor=False)
+    range_width = upper_bound - lower_bound
+    st.caption(f"Range width: €{range_width:.0f} (±{(range_width / euro_est * 100 / 2):.1f}%)")
+    
+    st.divider()
+    
+    # Display feature importance explanation
+    st.subheader("🎯 What's Driving This Price?", anchor=False)
+    st.caption("How each feature changes the rent compared to a baseline property:")
+    
+    for i, contrib in enumerate(top_contributors, 1):
+        contribution_text = format_contribution_text(contrib)
+        impact = contrib['contribution_euro']
         
-        # Display confidence score with visual indicator
-        confidence_level = format_confidence_level(confidence_score)
-        col_conf1, col_conf2 = st.columns([2, 1])
+        # Use different emoji based on impact
+        if abs(impact) > 100:
+            emoji = "🔥" if impact > 0 else "❄️"
+        elif abs(impact) > 50:
+            emoji = "⭐" if impact > 0 else "⬇️"
+        else:
+            emoji = "📊"
         
-        with col_conf1:
-            st.subheader(f"Confidence: {confidence_level}", anchor=False)
-            st.progress(confidence_score / 100)
+        # Display with visual indicator - single row
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            st.write(f"{emoji} **{i}.** {contribution_text}")
+        with col2:
+            amount_color = "🟢" if impact > 0 else "🔴"
+            st.write(f"{amount_color} **€{abs(impact):.0f}**")
+        with col3:
+            direction = "↑" if impact > 0 else "↓"
+            st.write(f"{direction} {abs(impact/euro_est*100):.1f}%")
+    
+    st.caption(f"📍 Based on location: {results['address']}")
+    
+    # Add explanation tooltip
+    with st.expander("ℹ️ How to interpret these results"):
+        st.markdown("""
+        **Confidence Score:** Indicates how certain the model is about this prediction. 
+        - Higher score = more similar properties in training data
+        - Lower score = fewer comparable properties, prediction more uncertain
         
-        with col_conf2:
-            st.metric("Confidence Score", f"{confidence_score:.1f}%")
+        **Confidence Interval:** The range where the actual rent is likely to fall (95% probability).
         
-        # Display prediction range
-        st.subheader(f"95% Confidence Interval: €{lower_bound:.0f} - €{upper_bound:.0f}", anchor=False)
-        range_width = upper_bound - lower_bound
-        st.caption(f"Range width: €{range_width:.0f} (±{(range_width / euro_est * 100 / 2):.1f}%)")
-        
-        st.divider()
-        
-        # Display feature importance explanation
-        st.subheader("🎯 What's Driving This Price?", anchor=False)
-        st.caption("How each feature changes the rent compared to a baseline property:")
-        
-        for i, contrib in enumerate(top_contributors, 1):
-            contribution_text = format_contribution_text(contrib)
-            impact = contrib['contribution_euro']
+        **Feature Contributions:** Shows how each feature affects YOUR price vs a baseline property.
+        - **"Location adds €200"** means your location increases rent by €200 compared to an average location
+        - **"Area reduces €50"** means your property size decreases rent by €50 compared to average
+        - These are marginal contributions - they show the impact of each specific feature
+        - They don't add up to the total price (that's normal for non-linear models)
+        """)
+
+
+# ========================================
+# NEIGHBORHOOD PRICE HEATMAP SECTION
+# ========================================
+
+st.divider()
+st.header("📍 Neighborhood Price Heatmap", anchor=False)
+st.markdown("""
+Explore average rental prices across Italian neighborhoods. 
+**Warmer colors** indicate higher average rents, **cooler colors** show more affordable areas.
+""")
+
+# Add toggle for map visibility
+show_heatmap = st.checkbox("Show Interactive Heatmap", value=False, help="Load the neighborhood price heatmap")
+
+if show_heatmap:
+    with st.spinner("Loading neighborhood data..."):
+        try:
+            # Load heatmap data
+            heatmap_data, stats, neighborhoods = load_neighborhood_price_data()
             
-            # Use different emoji based on impact
-            if abs(impact) > 100:
-                emoji = "🔥" if impact > 0 else "❄️"
-            elif abs(impact) > 50:
-                emoji = "⭐" if impact > 0 else "⬇️"
-            else:
-                emoji = "📊"
-            
-            # Display with visual indicator - single row
-            col1, col2, col3 = st.columns([2, 1, 1])
+            # Display statistics
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.write(f"{emoji} **{i}.** {contribution_text}")
+                st.metric("Neighborhoods", f"{stats['neighborhood_count']}")
             with col2:
-                amount_color = "🟢" if impact > 0 else "🔴"
-                st.write(f"{amount_color} **€{abs(impact):.0f}**")
+                st.metric("Avg Price", f"€{stats['avg_price']:.0f}/mo")
             with col3:
-                direction = "↑" if impact > 0 else "↓"
-                st.write(f"{direction} {abs(impact/euro_est*100):.1f}%")
-        
-        st.caption(f"📍 Based on location: {st.session_state.get('address', 'Unknown')}")
-        
-        # Add explanation tooltip
-        with st.expander("ℹ️ How to interpret these results"):
-            st.markdown("""
-            **Confidence Score:** Indicates how certain the model is about this prediction. 
-            - Higher score = more similar properties in training data
-            - Lower score = fewer comparable properties, prediction more uncertain
+                st.metric("Min Price", f"€{stats['min_price']:.0f}/mo")
+            with col4:
+                st.metric("Max Price", f"€{stats['max_price']:.0f}/mo")
             
-            **Confidence Interval:** The range where the actual rent is likely to fall (95% probability).
+            # Create folium map
+            center_lat, center_lon = get_italy_center_coords()
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=6,
+                tiles='OpenStreetMap',
+                control_scale=True
+            )
             
-            **Feature Contributions:** Shows how each feature affects YOUR price vs a baseline property.
-            - **"Location adds €200"** means your location increases rent by €200 compared to an average location
-            - **"Area reduces €50"** means your property size decreases rent by €50 compared to average
-            - These are marginal contributions - they show the impact of each specific feature
-            - They don't add up to the total price (that's normal for non-linear models)
-            """)
-    else:
-        st.error("Prediction failed. Please check your inputs and try again.")
+            # Add heatmap layer
+            HeatMap(
+                heatmap_data,
+                min_opacity=0.3,
+                max_zoom=13,
+                radius=25,
+                blur=35,
+                gradient={
+                    0.0: 'blue',
+                    0.3: 'cyan',
+                    0.5: 'lime',
+                    0.7: 'yellow',
+                    1.0: 'red'
+                }
+            ).add_to(m)
+            
+            # Display map
+            st_folium(m, width=700, height=500)
+            
+            # Add data table with search
+            with st.expander("🔍 Search Neighborhoods"):
+                search_term = st.text_input("Filter by neighborhood name", "")
+                
+                # Convert to DataFrame for display
+                import pandas as pd
+                neighborhoods_df = pd.DataFrame(neighborhoods)
+                
+                if search_term:
+                    neighborhoods_df = neighborhoods_df[
+                        neighborhoods_df['neighborhood'].str.contains(search_term, case=False, na=False)
+                    ]
+                
+                # Sort by average price
+                neighborhoods_df = neighborhoods_df.sort_values('avg_price', ascending=False)
+                
+                # Format for display
+                display_df = neighborhoods_df.copy()
+                display_df['avg_price'] = display_df['avg_price'].apply(lambda x: f"€{x:.0f}")
+                display_df.columns = ['Neighborhood', 'Latitude', 'Longitude', 'Avg Price/mo', 'Properties']
+                
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                st.caption(f"Showing {len(display_df)} of {stats['neighborhood_count']} neighborhoods")
+        
+        except Exception as e:
+            st.error(f"Failed to load heatmap data: {e}")
+            st.info("Please ensure the data files are in the correct location.")
+
 
