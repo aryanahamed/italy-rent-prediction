@@ -6,6 +6,8 @@ import requests
 import folium
 from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
+import plotly.graph_objects as go
+import plotly.express as px
 from config import ENERGY_CLASSES, ENERGY_CLASS_MAP, MARGIN_OF_ERROR
 from prediction_utils import (
     PredictionAnalyzer,
@@ -17,6 +19,12 @@ from map_data import (
     get_italy_center_coords,
     load_property_cluster_data,
     get_price_category
+)
+from feature_utils import (
+    find_similar_properties,
+    get_historical_price_trends,
+    calculate_affordability,
+    generate_prediction_report
 )
 
 
@@ -295,6 +303,354 @@ if st.session_state.prediction_results is not None:
         - These are marginal contributions - they show the impact of each specific feature
         - They don't add up to the total price (that's normal for non-linear models)
         """)
+    
+    st.divider()
+    
+    # ========== FEATURE #1: AFFORDABILITY CALCULATOR ==========
+    st.subheader("💰 Affordability Analysis", anchor=False)
+    
+    # Extract city from address for regional salary data
+    address_parts = results['address'].split(',')
+    city_name = address_parts[0].strip() if address_parts else None
+    
+    affordability = calculate_affordability(euro_est, region=None)
+    
+    col_aff1, col_aff2, col_aff3 = st.columns(3)
+    
+    with col_aff1:
+        st.metric(
+            "Affordability Level",
+            affordability['affordability_level'],
+            delta=None
+        )
+        st.caption(f"{affordability['affordability_emoji']} Based on 30% income rule")
+    
+    with col_aff2:
+        st.metric(
+            "Required Monthly Income",
+            f"€{affordability['required_income']:.0f}",
+            delta=None
+        )
+        st.caption("To afford this rent comfortably")
+    
+    with col_aff3:
+        st.metric(
+            "% of Avg Italian Salary",
+            f"{affordability['pct_of_avg_salary']:.1f}%",
+            delta=None,
+            delta_color="inverse"
+        )
+        st.caption(f"Avg salary: €{affordability['avg_salary']:.0f}/mo")
+    
+    # Affordability progress bar
+    affordability_pct = min(affordability['pct_of_avg_salary'], 100)
+    st.progress(affordability_pct / 100)
+    
+    if affordability['is_affordable']:
+        st.success("✅ This rent is within the affordable range (≤30% of average income)")
+    else:
+        st.warning("⚠️ This rent exceeds the recommended 30% affordability threshold")
+    
+    st.divider()
+    
+    # ========== FEATURE #3: SIMILAR PROPERTIES ==========
+    st.subheader("🏘️ Similar Properties in the Area", anchor=False)
+    st.caption("Actual listings with similar characteristics from our database")
+    
+    with st.spinner("Finding similar properties..."):
+        # Get input values from session state if they exist
+        input_rooms = st.session_state.get('rooms', 3)
+        input_area = st.session_state.get('area', np.log1p(80))  # Default 80 sqm
+        
+        similar_props = find_similar_properties(
+            city=city_name if city_name else "Milano",
+            rooms=input_rooms,
+            area=input_area,
+            price=euro_est,
+            top_n=5
+        )
+    
+    if similar_props:
+        # Calculate price comparison
+        similar_prices = [p['price'] for p in similar_props]
+        avg_similar_price = np.mean(similar_prices)
+        min_similar_price = min(similar_prices)
+        max_similar_price = max(similar_prices)
+        
+        col_sim1, col_sim2, col_sim3 = st.columns(3)
+        with col_sim1:
+            st.metric("Your Prediction", f"€{euro_est:.0f}")
+        with col_sim2:
+            diff = euro_est - avg_similar_price
+            st.metric("Similar Props Avg", f"€{avg_similar_price:.0f}", 
+                     delta=f"{diff:+.0f}" if abs(diff) > 1 else "Similar")
+        with col_sim3:
+            st.metric("Range", f"€{min_similar_price:.0f} - €{max_similar_price:.0f}")
+        
+        # Display similar properties in a nice format
+        for i, prop in enumerate(similar_props, 1):
+            with st.expander(f"🏠 {i}. {prop['neighborhood']}, {prop['city']} - €{prop['price']:.0f}/month"):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.write("**Property Details:**")
+                    st.write(f"• Rooms: {prop['rooms']}")
+                    st.write(f"• Area: {prop['area']:.0f} m²")
+                    st.write(f"• Bathrooms: {prop['bathrooms']}")
+                    st.write(f"• Energy Class: {prop['energy_class']}")
+                
+                with col2:
+                    st.write("**Amenities:**")
+                    st.write(f"• Furnished: {prop['furnished']}")
+                    st.write(f"• Balcony: {prop['balcony']}")
+                    st.write(f"• Parking: {prop['parking']}")
+                    st.write(f"• Condition: {prop['condition']}")
+                
+                with col3:
+                    st.write("**Price Comparison:**")
+                    price_diff = euro_est - prop['price']
+                    if abs(price_diff) < 50:
+                        st.write(f"💚 Very similar: €{prop['price']:.0f}")
+                    elif price_diff > 0:
+                        st.write(f"🔵 Cheaper: -€{abs(price_diff):.0f}")
+                    else:
+                        st.write(f"🔴 Pricier: +€{abs(price_diff):.0f}")
+                    st.write(f"• Match: {prop['similarity_score']*100:.0f}%")
+    else:
+        st.info("No similar properties found in our database for this search criteria.")
+    
+    st.divider()
+    
+    # ========== FEATURE #2: HISTORICAL PRICE TRENDS ==========
+    st.subheader("📈 Historical Price Trends", anchor=False)
+    st.caption("Price evolution in this area over time")
+    
+    with st.spinner("Loading historical data..."):
+        monthly_data, hist_stats = get_historical_price_trends(
+            city=city_name if city_name else "Milano",
+            neighborhood=None,
+            min_samples=5
+        )
+    
+    if monthly_data is not None and not monthly_data.empty:
+        # Display statistics
+        col_hist1, col_hist2, col_hist3, col_hist4 = st.columns(4)
+        
+        with col_hist1:
+            if 'trend' in hist_stats:
+                trend_emoji = "📈" if hist_stats['trend'] == 'rising' else "📉"
+                st.metric("Market Trend", f"{trend_emoji} {hist_stats['trend'].title()}")
+        
+        with col_hist2:
+            if 'price_change_pct' in hist_stats:
+                st.metric("Price Change", f"{hist_stats['price_change_pct']:+.1f}%")
+        
+        with col_hist3:
+            st.metric("Avg Price in Area", f"€{hist_stats['avg_price_overall']:.0f}")
+        
+        with col_hist4:
+            st.metric("Data Points", f"{hist_stats['total_listings']}")
+        
+        # Create time series chart using Plotly
+        fig = go.Figure()
+        
+        fig.add_trace(go.Scatter(
+            x=monthly_data['year_month'],
+            y=monthly_data['avg_price'],
+            mode='lines+markers',
+            name='Average Price',
+            line=dict(color='royalblue', width=3),
+            marker=dict(size=8),
+            hovertemplate='<b>%{x|%B %Y}</b><br>Avg Price: €%{y:.0f}<extra></extra>'
+        ))
+        
+        # Add your prediction as a horizontal line
+        fig.add_hline(
+            y=euro_est, 
+            line_dash="dash", 
+            line_color="green",
+            annotation_text=f"Your Prediction: €{euro_est:.0f}",
+            annotation_position="right"
+        )
+        
+        fig.update_layout(
+            title="Monthly Average Rent Prices Over Time",
+            xaxis_title="Date",
+            yaxis_title="Average Rent (€/month)",
+            hovermode='x unified',
+            height=400,
+            showlegend=True
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Interpretation
+        if 'trend' in hist_stats and hist_stats['trend'] == 'rising':
+            st.info(f"📊 The market is trending upward. Prices have {'increased' if hist_stats.get('price_change_pct', 0) > 0 else 'changed'} by {abs(hist_stats.get('price_change_pct', 0)):.1f}% over the analyzed period.")
+        elif 'trend' in hist_stats:
+            st.info(f"📊 The market is trending downward. Prices have {'decreased' if hist_stats.get('price_change_pct', 0) < 0 else 'changed'} by {abs(hist_stats.get('price_change_pct', 0)):.1f}% over the analyzed period.")
+    else:
+        st.info("Insufficient historical data available for this location. Try a more popular city or neighborhood.")
+    
+    st.divider()
+    
+    # ========== FEATURE #4: PROPERTY FEATURE OPTIMIZER ==========
+    st.subheader("🎨 Property Feature Optimizer - 'What If' Scenarios", anchor=False)
+    st.caption("Explore how different features affect the rent price in real-time")
+    
+    with st.expander("🔧 Try Different Feature Combinations", expanded=False):
+        st.write("**Adjust features below to see how they impact the predicted rent:**")
+        
+        # Get current values from session state
+        current_parking = st.session_state.get('parking spots', 'No')
+        current_balcony = st.session_state.get('balcony', 'No')
+        current_furnished = st.session_state.get('furnished', 'No')
+        current_fiber = st.session_state.get('fiber optic', 'No')
+        current_heating = st.session_state.get('Central Heating', 'No')
+        current_garden = st.session_state.get('shared garden', 'No')
+        current_gate = st.session_state.get('electric gate', 'No')
+        
+        col_opt1, col_opt2, col_opt3 = st.columns(3)
+        
+        with col_opt1:
+            st.write("**Toggle Amenities:**")
+            opt_parking = st.checkbox("Add Parking", value=(current_parking == 'Yes'), key='opt_parking')
+            opt_balcony = st.checkbox("Add Balcony", value=(current_balcony == 'Yes'), key='opt_balcony')
+            opt_garden = st.checkbox("Add Shared Garden", value=(current_garden == 'Yes'), key='opt_garden')
+        
+        with col_opt2:
+            st.write("**Toggle Features:**")
+            opt_furnished = st.checkbox("Furnished", value=(current_furnished == 'Yes'), key='opt_furnished')
+            opt_heating = st.checkbox("Central Heating", value=(current_heating == 'Yes'), key='opt_heating')
+            opt_fiber = st.checkbox("Fiber Optic", value=(current_fiber == 'Yes'), key='opt_fiber')
+        
+        with col_opt3:
+            st.write("**Toggle Extras:**")
+            opt_gate = st.checkbox("Electric Gate", value=(current_gate == 'Yes'), key='opt_gate')
+            opt_rooms_adj = st.slider("Adjust Rooms", min_value=1, max_value=10, 
+                                       value=st.session_state.get('rooms', 3), key='opt_rooms')
+        
+        # Calculate new prediction with adjusted features
+        if st.button("🔄 Calculate New Price", type="primary", key='optimize_btn'):
+            # Get all current values
+            opt_bathrooms = st.session_state.get('bathrooms', 1)
+            opt_energy_class = st.session_state.get('energy_class', 'D')
+            opt_area = st.session_state.get('area', np.log1p(80))
+            opt_external = st.session_state.get('external exposure', 'No')
+            opt_cellar = st.session_state.get('Celler', 'No')
+            opt_top_floor = st.session_state.get('Top Floor', 'No')
+            opt_condition = st.session_state.get('Condition', 'Good/Habitable')
+            
+            # Convert to binary
+            new_parking = 1 if opt_parking else 0
+            new_balcony = 1 if opt_balcony else 0
+            new_furnished = 1 if opt_furnished else 0
+            new_heating = 1 if opt_heating else 0
+            new_fiber = 1 if opt_fiber else 0
+            new_garden = 1 if opt_garden else 0
+            new_gate = 1 if opt_gate else 0
+            new_external = get_binary_value(opt_external)
+            new_cellar = get_binary_value(opt_cellar)
+            new_top_floor = get_binary_value(opt_top_floor)
+            
+            # Calculate derived features
+            new_condition_feature = 1 if opt_condition == 'Excellent/Renovated' else 0
+            new_energy_feature = ENERGY_CLASS_MAP[opt_energy_class]
+            new_furnished_heating = 1 if new_furnished == 1 and new_heating == 1 else 0
+            new_building_layout = calculate_building_layout(new_cellar, new_top_floor)
+            
+            # Get location
+            opt_lat = st.session_state.get('latitude', 45.4642)
+            opt_lon = st.session_state.get('longitude', 9.1900)
+            
+            # Build feature array
+            new_features = np.array([[
+                new_parking, opt_bathrooms, opt_rooms_adj, new_energy_feature,
+                new_heating, opt_area, new_furnished, new_balcony,
+                new_external, new_fiber, new_gate, new_garden,
+                new_building_layout, new_furnished_heating
+            ] + [opt_lat, opt_lon, opt_lat, opt_lon, opt_lat, opt_lon] + [new_condition_feature]])
+            
+            # Predict
+            new_result = predict_rent(new_features)
+            
+            if new_result[0] is not None:
+                new_price = new_result[0]
+                price_change = new_price - euro_est
+                
+                st.success(f"✨ New Predicted Price: **€{new_price:.0f}/month**")
+                
+                if abs(price_change) < 10:
+                    st.info(f"No significant change from original prediction")
+                elif price_change > 0:
+                    st.info(f"📈 Price increased by **€{price_change:.0f}** (+{(price_change/euro_est*100):.1f}%)")
+                else:
+                    st.info(f"📉 Price decreased by **€{abs(price_change):.0f}** ({(price_change/euro_est*100):.1f}%)")
+                
+                # Show feature impact breakdown
+                st.write("**Impact Breakdown:**")
+                impacts = []
+                if opt_parking != (current_parking == 'Yes'):
+                    impacts.append(f"{'Added' if opt_parking else 'Removed'} Parking")
+                if opt_balcony != (current_balcony == 'Yes'):
+                    impacts.append(f"{'Added' if opt_balcony else 'Removed'} Balcony")
+                if opt_furnished != (current_furnished == 'Yes'):
+                    impacts.append(f"{'Added' if opt_furnished else 'Removed'} Furnished")
+                if opt_heating != (current_heating == 'Yes'):
+                    impacts.append(f"{'Added' if opt_heating else 'Removed'} Central Heating")
+                if opt_rooms_adj != st.session_state.get('rooms', 3):
+                    impacts.append(f"Changed rooms: {st.session_state.get('rooms', 3)} → {opt_rooms_adj}")
+                
+                if impacts:
+                    for impact in impacts:
+                        st.write(f"• {impact}")
+                else:
+                    st.write("• No changes made")
+    
+    st.divider()
+    
+    # ========== FEATURE #5: DOWNLOADABLE REPORT ==========
+    st.subheader("📥 Download Prediction Report", anchor=False)
+    st.caption("Save your prediction results for future reference")
+    
+    # Generate report
+    report_text = generate_prediction_report(
+        prediction_data=results,
+        similar_properties=similar_props if similar_props else [],
+        affordability=affordability,
+        historical_stats=hist_stats if hist_stats else None
+    )
+    
+    # Download button
+    col_dl1, col_dl2 = st.columns([2, 1])
+    with col_dl1:
+        st.download_button(
+            label="📄 Download Full Report (TXT)",
+            data=report_text,
+            file_name=f"rent_prediction_report_{results['address'].replace(' ', '_').replace(',', '')}_{euro_est:.0f}EUR.txt",
+            mime="text/plain",
+            help="Download a comprehensive text report with all prediction details"
+        )
+    
+    with col_dl2:
+        st.caption(f"Report size: {len(report_text)} chars")
+
+
+# Add explanation tooltip (keep the old one)
+with st.expander("ℹ️ How to interpret these results (Legacy)"):
+    st.markdown("""
+    **Confidence Score:** Indicates how certain the model is about this prediction. 
+    - Higher score = more similar properties in training data
+    - Lower score = fewer comparable properties, prediction more uncertain
+    
+    **Confidence Interval:** The range where the actual rent is likely to fall (95% probability).
+    
+    **Feature Contributions:** Shows how each feature affects YOUR price vs a baseline property.
+    - **"Location adds €200"** means your location increases rent by €200 compared to an average location
+    - **"Area reduces €50"** means your property size decreases rent by €50 compared to average
+    - These are marginal contributions - they show the impact of each specific feature
+    - They don't add up to the total price (that's normal for non-linear models)
+    """)
 
 
 # NEIGHBORHOOD PRICE HEATMAP SECTION
