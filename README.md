@@ -21,6 +21,31 @@ Check the following page to try out the model.
 
 [Italy Rent Prediction](https://italy-rent-prediction.streamlit.app/)
 
+### Running Locally
+To run the Streamlit app locally:
+
+```bash
+streamlit run Home.py
+```
+
+## Technical Details
+
+### Model
+- **Algorithm**: XGBoost Regressor
+- **Features**: 21 features including location, size, amenities, and condition
+- **Target**: Log-transformed rent price (to handle skewness)
+
+### Confidence Score Calculation
+The confidence score (0-100%) is estimated using feature perturbation analysis:
+- **High confidence**: Predictions remain stable with small input variations
+- **Low confidence**: Predictions vary significantly, indicating uncertainty
+
+### Feature Importance
+Feature contributions are calculated using the model's learned importance weights, providing monetary impact for each property attribute:
+- Location features are aggregated for clarity
+- Both positive and negative impacts are shown
+- Top 5 most influential features are displayed
+
 
 ## Sample Plots
 [![Heatmap](https://i.ibb.co/Lz79PC8/output.png)](https://ibb.co/kgCqyhx)
