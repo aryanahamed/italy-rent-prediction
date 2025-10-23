@@ -12,6 +12,49 @@ from datetime import datetime
 import streamlit as st
 
 
+def remove_price_outliers(df: pd.DataFrame, column: str = 'price', method: str = 'iqr') -> pd.DataFrame:
+    """
+    Remove price outliers using the IQR (Interquartile Range) method.
+    
+    The IQR method removes values outside the range [Q1 - 1.5*IQR, Q3 + 1.5*IQR],
+    which is a standard statistical approach that removes extreme outliers while
+    preserving legitimate market variations.
+    
+    Args:
+        df: DataFrame with price data
+        column: Column name to filter (default: 'price')
+        method: Filtering method ('iqr' for Interquartile Range)
+        
+    Returns:
+        DataFrame with outliers removed
+    """
+    if df.empty or column not in df.columns:
+        return df
+    
+    # Remove NaN values first
+    df_clean = df.dropna(subset=[column]).copy()
+    
+    if len(df_clean) == 0:
+        return df
+    
+    if method == 'iqr':
+        Q1 = df_clean[column].quantile(0.25)
+        Q3 = df_clean[column].quantile(0.75)
+        IQR = Q3 - Q1
+        
+        # Define outlier bounds (standard statistical method)
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        
+        # Keep only values within bounds
+        df_filtered = df_clean[(df_clean[column] >= lower_bound) & 
+                              (df_clean[column] <= upper_bound)].copy()
+        
+        return df_filtered
+    
+    return df_clean
+
+
 @st.cache_data(ttl=3600)
 def load_rental_data():
     """
@@ -44,6 +87,7 @@ def find_similar_properties(
 ) -> List[Dict]:
     """
     Find similar properties from the dataset based on user criteria.
+    Filters out extreme price outliers to ensure reliable comparisons.
     
     Args:
         city: City name
@@ -58,6 +102,9 @@ def find_similar_properties(
     try:
         # Issue #2 fix: Use cached data loader
         df = load_rental_data()
+        
+        # Remove price outliers to ensure reliable comparisons
+        df = remove_price_outliers(df, column='price', method='iqr')
         
         # Convert area from log space to normal space
         area_sqm = np.expm1(area)
@@ -148,6 +195,9 @@ def get_historical_price_trends(
     try:
         # Issue #2 fix: Use cached data loader
         df = load_rental_data()
+        
+        # Remove price outliers for cleaner trend analysis
+        df = remove_price_outliers(df, column='price', method='iqr')
         
         # Filter by city and optionally neighborhood
         if neighborhood:
