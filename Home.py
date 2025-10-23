@@ -4,7 +4,7 @@ import joblib
 import numpy as np
 import requests
 import folium
-from folium.plugins import HeatMap
+from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
 from config import ENERGY_CLASSES, ENERGY_CLASS_MAP, MARGIN_OF_ERROR
 from prediction_utils import (
@@ -12,7 +12,12 @@ from prediction_utils import (
     format_confidence_level,
     format_contribution_text
 )
-from map_data import load_neighborhood_price_data, get_italy_center_coords
+from map_data import (
+    load_neighborhood_price_data, 
+    get_italy_center_coords,
+    load_property_cluster_data,
+    get_price_category
+)
 
 
 @st.cache_resource(ttl=3600)
@@ -292,10 +297,7 @@ if st.session_state.prediction_results is not None:
         """)
 
 
-# ========================================
 # NEIGHBORHOOD PRICE HEATMAP SECTION
-# ========================================
-
 st.divider()
 st.header("📍 Neighborhood Price Heatmap", anchor=False)
 st.markdown("""
@@ -383,5 +385,201 @@ if show_heatmap:
         except Exception as e:
             st.error(f"Failed to load heatmap data: {e}")
             st.info("Please ensure the data files are in the correct location.")
+
+
+# PROPERTY CLUSTER MAP SECTION
+st.divider()
+st.header("🏘️ Property Cluster Map", anchor=False)
+st.markdown("""
+Explore individual rental properties grouped by location and similarity. 
+Clusters show the **number of properties** in each area, with **color-coded markers** by price range.
+""")
+
+# Add toggle for cluster map visibility
+show_cluster_map = st.checkbox("Show Property Clusters", value=False, help="Load interactive property cluster map")
+
+if show_cluster_map:
+    # Filter controls
+    st.subheader("🎛️ Filter Properties", anchor=False)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        price_range = st.slider(
+            "Price Range (€/month)",
+            min_value=0,
+            max_value=5000,
+            value=(0, 3000),
+            step=100,
+            help="Filter properties by monthly rent",
+            key="cluster_price_range"
+        )
+    
+    with col2:
+        room_range = st.slider(
+            "Number of Rooms",
+            min_value=1,
+            max_value=10,
+            value=(1, 5),
+            step=1,
+            help="Filter properties by room count",
+            key="cluster_room_range"
+        )
+    
+    # Create a cache key based on filter values
+    cache_key = f"properties_{price_range[0]}_{price_range[1]}_{room_range[0]}_{room_range[1]}"
+    
+    # Check if we need to reload data (filters changed)
+    if 'cluster_cache_key' not in st.session_state or st.session_state.cluster_cache_key != cache_key:
+        with st.spinner("Loading property data..."):
+            try:
+                # Load filtered property data
+                properties = load_property_cluster_data(
+                    price_min=price_range[0],
+                    price_max=price_range[1],
+                    rooms_min=room_range[0],
+                    rooms_max=room_range[1]
+                )
+                # Store in session state
+                st.session_state.cluster_properties = properties
+                st.session_state.cluster_cache_key = cache_key
+            except Exception as e:
+                st.error(f"Failed to load cluster map data: {e}")
+                st.info("Please ensure the data files are in the correct location.")
+                properties = []
+    else:
+        # Use cached data from session state
+        properties = st.session_state.cluster_properties
+    
+    # Display the data
+    if not properties:
+        st.warning("No properties found with the selected filters. Try adjusting the ranges.")
+    else:
+        # Display summary statistics
+        total_properties = len(properties)
+        avg_price = sum(p['price'] for p in properties) / total_properties
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Properties Found", f"{total_properties:,}")
+        with col2:
+            st.metric("Average Price", f"€{avg_price:.0f}/mo")
+        with col3:
+            # Count price categories
+            price_categories = {}
+            for prop in properties:
+                category = get_price_category(prop['price'])['label']
+                price_categories[category] = price_categories.get(category, 0) + 1
+            most_common = max(price_categories.items(), key=lambda x: x[1])[0]
+            st.metric("Most Common", most_common.split('(')[0].strip())
+        
+        # Create map with clusters
+        center_lat, center_lon = get_italy_center_coords()
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=6,
+            tiles='OpenStreetMap',
+            control_scale=True
+        )
+        
+        # Create marker cluster with custom settings
+        marker_cluster = MarkerCluster(
+            name='Property Clusters',
+            overlay=True,
+            control=True,
+            icon_create_function=None
+        )
+        
+        # Add markers for each property
+        for prop in properties:
+            category = get_price_category(prop['price'])
+            
+            # Create popup content with property details
+            popup_html = f"""
+            <div style="font-family: Arial; width: 250px;">
+                <h4 style="margin-bottom: 10px; color: #1f77b4;">
+                    {prop['neighborhood']}, {prop['city']}
+                </h4>
+                <hr style="margin: 5px 0;">
+                <p style="font-size: 18px; font-weight: bold; color: #2ca02c; margin: 5px 0;">
+                    €{prop['price']:.0f}/month
+                </p>
+                <p style="margin: 3px 0;"><b>Rooms:</b> {prop['rooms']}</p>
+                <p style="margin: 3px 0;"><b>Area:</b> {prop['area']} m²</p>
+                <p style="margin: 3px 0;"><b>Bathrooms:</b> {prop['bathrooms']}</p>
+                <p style="margin: 3px 0;"><b>Energy Class:</b> {prop['energy_class']}</p>
+                <p style="margin: 3px 0;"><b>Furnished:</b> {prop['furnished']}</p>
+                <p style="margin: 3px 0;"><b>Balcony:</b> {prop['balcony']}</p>
+                <p style="margin: 3px 0;"><b>Parking:</b> {prop['parking']}</p>
+                <hr style="margin: 5px 0;">
+                <p style="font-size: 11px; color: #666; margin: 3px 0;">
+                    Category: {category['label']}
+                </p>
+            </div>
+            """
+            
+            # Create marker with color based on price category
+            folium.Marker(
+                location=[prop['latitude'], prop['longitude']],
+                popup=folium.Popup(popup_html, max_width=300),
+                tooltip=f"€{prop['price']:.0f} - {prop['rooms']} rooms",
+                icon=folium.Icon(color=category['color'], icon=category['icon'], prefix='fa')
+            ).add_to(marker_cluster)
+        
+        # Add cluster to map
+        marker_cluster.add_to(m)
+        
+        # Add layer control
+        folium.LayerControl().add_to(m)
+        
+        # Display the map
+        st_folium(m, width=700, height=500, key="cluster_map")
+        
+        # Legend
+        st.markdown("### 🎨 Price Category Legend")
+        legend_cols = st.columns(5)
+        
+        categories_info = [
+            ("green", "Budget", "< €500"),
+            ("blue", "Affordable", "€500-€1000"),
+            ("orange", "Mid-range", "€1000-€1500"),
+            ("red", "Premium", "€1500-€2500"),
+            ("purple", "Luxury", "€2500+")
+        ]
+        
+        for i, (color, label, price_range_text) in enumerate(categories_info):
+            with legend_cols[i]:
+                # Count properties in this category
+                count = sum(1 for p in properties if get_price_category(p['price'])['color'] == color)
+                
+                # Color indicator (using emoji approximation)
+                color_emoji = {
+                    'green': '🟢',
+                    'blue': '🔵', 
+                    'orange': '🟠',
+                    'red': '🔴',
+                    'purple': '🟣'
+                }
+                
+                st.markdown(f"""
+                **{color_emoji[color]} {label}**  
+                {price_range_text}  
+                *{count} properties*
+                """)
+        
+        # Additional insights
+        with st.expander("💡 Cluster Map Tips"):
+            st.markdown("""
+            **How to use this map:**
+            - **Zoom in/out** to see individual properties or broader areas
+            - **Click clusters** (numbered circles) to zoom into that area
+            - **Click markers** to see detailed property information
+            - **Adjust filters** above to narrow down your search
+            - **Colors indicate price ranges** - see legend below map
+            
+            **Cluster numbers** represent how many properties are grouped in that location.
+            The map automatically groups nearby properties for better visualization.
+            """)
+
+
 
 
