@@ -30,13 +30,21 @@ from feature_utils import (
 
 @st.cache_resource(ttl=3600)
 def load_model(path='rent_prediction_model/rent_model_v2.pkl'):
+    """Load the trained model with comprehensive error handling."""
     try:
-        return joblib.load(path)
+        model = joblib.load(path)
+        # Verify model has required attributes
+        if not hasattr(model, 'predict'):
+            st.error(f"Error: Loaded object from {path} is not a valid model (missing predict method).")
+            return None
+        return model
     except FileNotFoundError:
-        st.error(f"Error: Model file not found at {path}")
+        st.error(f"❌ Error: Model file not found at {path}")
+        st.info("💡 Please ensure the model file exists in the correct location.")
         return None
     except Exception as e:
-        st.error(f"An error occurred while loading the model: {e}")
+        st.error(f"❌ An error occurred while loading the model: {e}")
+        st.info("💡 The model file may be corrupted. Please check the file integrity.")
         return None
 
 @st.cache_resource(ttl=3600)
@@ -44,11 +52,21 @@ def load_prediction_analyzer():
     """Initialize the prediction analyzer with the loaded model."""
     model = load_model()
     if model is not None:
-        return PredictionAnalyzer(model)
+        try:
+            return PredictionAnalyzer(model)
+        except Exception as e:
+            st.error(f"❌ Error initializing prediction analyzer: {e}")
+            return None
     return None
     
 model = load_model()
 analyzer = load_prediction_analyzer()
+
+# Issue #5 fix: Graceful degradation if model fails to load
+if model is None or analyzer is None:
+    st.error("🚨 Critical Error: Unable to load the prediction model. The application cannot process predictions.")
+    st.info("ℹ️ Please contact the system administrator or check the model file.")
+    st.stop()  # Stop execution if model is not available
 
 # Initialize session state for predictions
 if 'prediction_results' not in st.session_state:
@@ -72,29 +90,95 @@ def calculate_building_layout(cellar, top_floor):
     return 0
 
 def predict_rent(features):
+    """
+    Make rent prediction with comprehensive error handling.
+    
+    Args:
+        features: Feature array for prediction
+        
+    Returns:
+        Tuple of (euro_est, lower_bound, upper_bound, confidence_score, top_contributors)
+        or (None, None, None, None, None) if prediction fails
+    """
     if model is None or analyzer is None:
-        st.error("Model is not loaded. Cannot perform prediction.")
+        st.error("❌ Model is not loaded. Cannot perform prediction.")
         return None, None, None, None, None
     
-    # Get confidence-based prediction with intervals
-    log_estimate, log_lower, log_upper, confidence_score = analyzer.calculate_confidence_score(features)
+    try:
+        # Validate feature array
+        if features is None or len(features) == 0:
+            st.error("❌ Invalid feature array provided.")
+            return None, None, None, None, None
+        
+        # Get confidence-based prediction with intervals
+        log_estimate, log_lower, log_upper, confidence_score = analyzer.calculate_confidence_score(features)
+        
+        # Convert from log space to euro
+        euro_est = np.expm1(log_estimate)
+        lower_bound = np.expm1(log_lower)
+        upper_bound = np.expm1(log_upper)
+        
+        # Ensure bounds are non-negative and logical
+        lower_bound = max(0, lower_bound)
+        upper_bound = max(lower_bound, upper_bound)
+        
+        # Calculate feature contributions
+        contributions = analyzer.get_feature_contributions(features, log_estimate)
+        top_contributors = analyzer.get_top_contributors(contributions, top_n=5)
+        
+        return euro_est, lower_bound, upper_bound, confidence_score, top_contributors
     
-    # Convert from log space to euro
-    euro_est = np.expm1(log_estimate)
-    lower_bound = np.expm1(log_lower)
-    upper_bound = np.expm1(log_upper)
-    
-    # Ensure bounds are non-negative
-    lower_bound = max(0, lower_bound)
-    upper_bound = max(lower_bound, upper_bound)
-    
-    # Calculate feature contributions
-    contributions = analyzer.get_feature_contributions(features, log_estimate)
-    top_contributors = analyzer.get_top_contributors(contributions, top_n=5)
-    
-    return euro_est, lower_bound, upper_bound, confidence_score, top_contributors
+    except Exception as e:
+        st.error(f"❌ Error during prediction: {e}")
+        st.info("💡 Please check your input values and try again.")
+        return None, None, None, None, None
 
     
+
+def extract_location_hierarchy(place_properties):
+    """
+    Extract region, city, and neighborhood coordinates from Photon API response.
+    Falls back to primary coordinates if specific levels are not available.
+    
+    Args:
+        place_properties: Properties dict from Photon API response
+        
+    Returns:
+        Tuple of (region, city, neighborhood, state) as strings
+    """
+    # Extract available location information
+    state = place_properties.get('state', '')  # Region level
+    city = place_properties.get('city', '') or place_properties.get('county', '')
+    neighborhood = place_properties.get('district', '') or place_properties.get('suburb', '') or place_properties.get('locality', '')
+    
+    return state, city, neighborhood
+
+def geocode_location_level(location_name, country='Italy'):
+    """
+    Geocode a specific location to get its coordinates.
+    
+    Args:
+        location_name: Name of the location to geocode
+        country: Country name (default: Italy)
+        
+    Returns:
+        Tuple of (latitude, longitude) or (None, None) if not found
+    """
+    if not location_name:
+        return None, None
+    
+    try:
+        url = f"https://photon.komoot.io/api/?q={location_name}, {country}&limit=1"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            features = response.json().get('features', [])
+            if features:
+                coords = features[0]['geometry']['coordinates']
+                return coords[1], coords[0]  # lat, lon
+    except:
+        pass
+    
+    return None, None
 
 address = st.text_input(
     'Search your desired neighborhood (For better results add city with the name)', 
@@ -102,7 +186,8 @@ address = st.text_input(
     help="Example: 'Navigli, Milano'"
     )
 
-if address:
+# Issue #5 fix: Empty address validation
+if address and address.strip():
     photon_url = f"https://photon.komoot.io/api/?q={address} Italy&limit=5"
     try:
         response = requests.get(photon_url, timeout=10)
@@ -112,15 +197,80 @@ if address:
             suggestions = response.json()['features']
             
             if suggestions:
-                options = [f"{place['properties']['name']}, {place['properties']['country']}" for place in suggestions]
+                # Create unique options by adding more context and removing duplicates
+                options = []
+                place_mapping = {}  # Map option label to place index
+                seen = set()
+                
+                for idx, place in enumerate(suggestions):
+                    props = place['properties']
+                    # Build a more detailed label
+                    name = props.get('name', 'Unknown')
+                    city = props.get('city', '')
+                    state = props.get('state', '')
+                    country = props.get('country', 'Italy')
+                    
+                    # Create label with available info
+                    if city and state:
+                        label = f"{name}, {city}, {state}, {country}"
+                    elif city:
+                        label = f"{name}, {city}, {country}"
+                    elif state:
+                        label = f"{name}, {state}, {country}"
+                    else:
+                        label = f"{name}, {country}"
+                    
+                    # Only add if not duplicate
+                    if label not in seen:
+                        options.append(label)
+                        place_mapping[label] = idx
+                        seen.add(label)
+                
+                if not options:
+                    options = [f"{place['properties'].get('name', 'Unknown')}, {place['properties'].get('country', 'Italy')}" for place in suggestions]
+                    place_mapping = {label: idx for idx, label in enumerate(options)}
+                
                 selected_option = st.selectbox("Select an option", options)
                 
-                selected_place = suggestions[options.index(selected_option)]
+                # Get the correct place using the mapping
+                selected_place = suggestions[place_mapping[selected_option]]
                 lat = selected_place['geometry']['coordinates'][1]
                 lon = selected_place['geometry']['coordinates'][0]
-
+                
+                # Extract location hierarchy
+                properties = selected_place['properties']
+                state, city, neighborhood = extract_location_hierarchy(properties)
+                
+                # Store primary location coordinates
                 st.session_state['latitude'] = lat
                 st.session_state['longitude'] = lon
+                
+                # Geocode region level (state)
+                if state:
+                    region_lat, region_lon = geocode_location_level(state)
+                    st.session_state['latitude_region'] = region_lat if region_lat else lat
+                    st.session_state['longitude_region'] = region_lon if region_lon else lon
+                    st.session_state['region'] = state
+                else:
+                    st.session_state['latitude_region'] = lat
+                    st.session_state['longitude_region'] = lon
+                    st.session_state['region'] = ''
+                
+                # Geocode city level
+                if city:
+                    city_lat, city_lon = geocode_location_level(city)
+                    st.session_state['latitude_city'] = city_lat if city_lat else lat
+                    st.session_state['longitude_city'] = city_lon if city_lon else lon
+                    st.session_state['city'] = city
+                else:
+                    st.session_state['latitude_city'] = lat
+                    st.session_state['longitude_city'] = lon
+                    st.session_state['city'] = ''
+                
+                # Neighborhood level uses primary coordinates
+                st.session_state['latitude_neighborhood'] = lat
+                st.session_state['longitude_neighborhood'] = lon
+                st.session_state['neighborhood'] = neighborhood if neighborhood else properties.get('name', '')
                 
                 map_data = {'latitude': [lat], 'longitude': [lon]}
                 st.map(map_data)
@@ -176,11 +326,24 @@ with st.form(key='rent_form'):
     submit_button = st.form_submit_button(label='Predict Rent', type="primary")
 
 if submit_button:
-    if 'latitude' not in st.session_state or 'longitude' not in st.session_state:
-        st.error("Please search for and select a valid address first.")
+    # Issue #5 fix: Improved validation with clear messaging
+    if not address or not address.strip():
+        st.error("⚠️ Please enter an address in the search field above before making a prediction.")
+    elif 'latitude' not in st.session_state or 'longitude' not in st.session_state:
+        st.error("⚠️ Please select a valid address from the dropdown suggestions before making a prediction.")
     else:
+        # Store area in a separate session state key (can't use 'area' as it's bound to widget)
+        st.session_state['area_log_value'] = area
+        
+        # Get all location coordinates (region, city, neighborhood)
         lat = st.session_state['latitude']
         lon = st.session_state['longitude']
+        lat_region = st.session_state.get('latitude_region', lat)
+        lon_region = st.session_state.get('longitude_region', lon)
+        lat_city = st.session_state.get('latitude_city', lat)
+        lon_city = st.session_state.get('longitude_city', lon)
+        lat_neighborhood = st.session_state.get('latitude_neighborhood', lat)
+        lon_neighborhood = st.session_state.get('longitude_neighborhood', lon)
     
     parking_spots = get_binary_value(parking_spots)
     balcony = get_binary_value(balcony)
@@ -198,11 +361,17 @@ if submit_button:
     furnished_and_central_heating = 1 if furnished == 1 and central_heating == 1 else 0
     building_layout = calculate_building_layout(cellar, top_floor)
     
+    # Build feature array with separate region/city/neighborhood coordinates
     features = np.array([[
         parking_spots, bathrooms, rooms, energy_class_feature, 
         central_heating, area, furnished, balcony, 
         external_exposure, fiber_optic, electric_gate, shared_garden, 
-        building_layout, furnished_and_central_heating] + [lat, lon, lat, lon, lat, lon] + [condition_feature]])
+        building_layout, furnished_and_central_heating,
+        lat_region, lon_region,  # Region-level coordinates
+        lat_city, lon_city,      # City-level coordinates
+        lat_neighborhood, lon_neighborhood,  # Neighborhood-level coordinates
+        condition_feature
+    ]])
     
     # Progress bar
     progress_bar = st.progress(0)
@@ -309,11 +478,21 @@ if st.session_state.prediction_results is not None:
     # ========== FEATURE #1: AFFORDABILITY CALCULATOR ==========
     st.subheader("💰 Affordability Analysis", anchor=False)
     
-    # Extract city from address for regional salary data
-    address_parts = results['address'].split(',')
-    city_name = address_parts[0].strip() if address_parts else None
+    # Issue #7 fix: Extract region from session state for regional salary data
+    region_name = st.session_state.get('region', None)
+    city_name = st.session_state.get('city', None)
     
-    affordability = calculate_affordability(euro_est, region=None)
+    # Display location context if available
+    if region_name:
+        st.caption(f"📍 Region: {region_name}" + (f" | City: {city_name}" if city_name else ""))
+    
+    affordability = calculate_affordability(euro_est, region=region_name)
+    
+    # Add explanation at the top
+    st.info(f"""
+    **What does this mean?** This analysis shows whether the €{euro_est:.0f}/month rent is affordable based on the **30% rule**: 
+    rent should not exceed 30% of monthly income. The average {"regional" if region_name else "Italian"} salary is €{affordability['avg_salary']:.0f}/month.
+    """)
     
     col_aff1, col_aff2, col_aff3 = st.columns(3)
     
@@ -323,7 +502,7 @@ if st.session_state.prediction_results is not None:
             affordability['affordability_level'],
             delta=None
         )
-        st.caption(f"{affordability['affordability_emoji']} Based on 30% income rule")
+        st.caption(f"{affordability['affordability_emoji']} Overall assessment")
     
     with col_aff2:
         st.metric(
@@ -331,25 +510,32 @@ if st.session_state.prediction_results is not None:
             f"€{affordability['required_income']:.0f}",
             delta=None
         )
-        st.caption("To afford this rent comfortably")
+        st.caption("To afford this rent comfortably (30% rule)")
     
     with col_aff3:
+        salary_label = "Regional Salary" if region_name else "Avg Italian Salary"
         st.metric(
-            "% of Avg Italian Salary",
+            f"Rent as % of {salary_label}",
             f"{affordability['pct_of_avg_salary']:.1f}%",
-            delta=None,
+            delta=f"{affordability['pct_of_avg_salary'] - 30:.1f}% vs 30% threshold",
             delta_color="inverse"
         )
-        st.caption(f"Avg salary: €{affordability['avg_salary']:.0f}/mo")
+        st.caption(f"Reference: €{affordability['avg_salary']:.0f}/mo average salary")
     
-    # Affordability progress bar
+    # Affordability progress bar with clearer label
+    st.write("**Rent Burden (% of average salary):**")
     affordability_pct = min(affordability['pct_of_avg_salary'], 100)
     st.progress(affordability_pct / 100)
+    col_legend1, col_legend2 = st.columns([1, 3])
+    with col_legend1:
+        st.caption(f"**Current: {affordability['pct_of_avg_salary']:.1f}%**")
+    with col_legend2:
+        st.caption("✅ ≤30% Affordable | 🟡 30-40% Moderate | 🟠 40-50% Challenging | 🔴 >50% High burden")
     
     if affordability['is_affordable']:
         st.success("✅ This rent is within the affordable range (≤30% of average income)")
     else:
-        st.warning("⚠️ This rent exceeds the recommended 30% affordability threshold")
+        st.warning(f"⚠️ This rent exceeds the recommended 30% affordability threshold by {affordability['pct_of_avg_salary'] - 30:.1f} percentage points")
     
     st.divider()
     
@@ -425,31 +611,62 @@ if st.session_state.prediction_results is not None:
     st.subheader("📈 Historical Price Trends", anchor=False)
     st.caption("Price evolution in this area over time")
     
+    # Issue #8 fix: Add neighborhood-level filtering option
+    neighborhood_name = st.session_state.get('neighborhood', None)
+    
+    col_filter1, col_filter2 = st.columns([3, 1])
+    with col_filter1:
+        st.write("**Filter trends by:**")
+    with col_filter2:
+        show_neighborhood = st.checkbox(
+            "Neighborhood only", 
+            value=False, 
+            key='filter_neighborhood',
+            help="Show trends for specific neighborhood instead of city-wide data"
+        ) if neighborhood_name else False
+    
     with st.spinner("Loading historical data..."):
-        monthly_data, hist_stats = get_historical_price_trends(
-            city=city_name if city_name else "Milano",
-            neighborhood=None,
-            min_samples=5
-        )
+        if show_neighborhood and neighborhood_name:
+            monthly_data, hist_stats = get_historical_price_trends(
+                city=city_name if city_name else "Milano",
+                neighborhood=neighborhood_name,
+                min_samples=5
+            )
+            location_label = f"{neighborhood_name}, {city_name}" if city_name else neighborhood_name
+        else:
+            monthly_data, hist_stats = get_historical_price_trends(
+                city=city_name if city_name else "Milano",
+                neighborhood=None,
+                min_samples=5
+            )
+            location_label = city_name if city_name else "Milano"
     
     if monthly_data is not None and not monthly_data.empty:
         # Display statistics
         col_hist1, col_hist2, col_hist3, col_hist4 = st.columns(4)
         
         with col_hist1:
-            if 'trend' in hist_stats:
-                trend_emoji = "📈" if hist_stats['trend'] == 'rising' else "📉"
-                st.metric("Market Trend", f"{trend_emoji} {hist_stats['trend'].title()}")
+            # Use actual price change for trend direction (more intuitive)
+            if 'price_change_pct' in hist_stats:
+                price_change = hist_stats['price_change_pct']
+                if price_change > 0:
+                    trend_emoji = "📈"
+                    trend_label = "Rising"
+                else:
+                    trend_emoji = "📉"
+                    trend_label = "Falling"
+                st.metric("Market Trend", f"{trend_emoji} {trend_label}", 
+                         delta=f"{price_change:+.1f}%")
         
         with col_hist2:
-            if 'price_change_pct' in hist_stats:
-                st.metric("Price Change", f"{hist_stats['price_change_pct']:+.1f}%")
+            if 'data_points' in hist_stats:
+                st.metric("Data Points", f"{hist_stats['data_points']} months")
         
         with col_hist3:
             st.metric("Avg Price in Area", f"€{hist_stats['avg_price_overall']:.0f}")
         
         with col_hist4:
-            st.metric("Data Points", f"{hist_stats['total_listings']}")
+            st.metric("Total Listings", f"{hist_stats['total_listings']}")
         
         # Create time series chart using Plotly
         fig = go.Figure()
@@ -474,7 +691,7 @@ if st.session_state.prediction_results is not None:
         )
         
         fig.update_layout(
-            title="Monthly Average Rent Prices Over Time",
+            title=f"Monthly Average Rent Prices Over Time - {location_label}",
             xaxis_title="Date",
             yaxis_title="Average Rent (€/month)",
             hovermode='x unified',
@@ -484,11 +701,14 @@ if st.session_state.prediction_results is not None:
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Interpretation
-        if 'trend' in hist_stats and hist_stats['trend'] == 'rising':
-            st.info(f"📊 The market is trending upward. Prices have {'increased' if hist_stats.get('price_change_pct', 0) > 0 else 'changed'} by {abs(hist_stats.get('price_change_pct', 0)):.1f}% over the analyzed period.")
-        elif 'trend' in hist_stats:
-            st.info(f"📊 The market is trending downward. Prices have {'decreased' if hist_stats.get('price_change_pct', 0) < 0 else 'changed'} by {abs(hist_stats.get('price_change_pct', 0)):.1f}% over the analyzed period.")
+        # Interpretation with location context - use actual price change direction
+        location_context = f" in {location_label}"
+        if 'price_change_pct' in hist_stats:
+            price_change_pct = hist_stats.get('price_change_pct', 0)
+            if price_change_pct > 0:
+                st.info(f"📊 The market{location_context} is trending upward. Prices have increased by {abs(price_change_pct):.1f}% over the analyzed period.")
+            else:
+                st.info(f"📊 The market{location_context} is trending downward. Prices have decreased by {abs(price_change_pct):.1f}% over the analyzed period.")
     else:
         st.info("Insufficient historical data available for this location. Try a more popular city or neighborhood.")
     
@@ -530,12 +750,42 @@ if st.session_state.prediction_results is not None:
             opt_rooms_adj = st.slider("Adjust Rooms", min_value=1, max_value=10, 
                                        value=st.session_state.get('rooms', 3), key='opt_rooms')
         
+        # Additional adjustable features (Issue #4 fix)
+        st.write("**Adjust Core Features:**")
+        col_adj1, col_adj2, col_adj3 = st.columns(3)
+        
+        with col_adj1:
+            opt_bathrooms = st.slider("Bathrooms", min_value=1, max_value=5, 
+                                      value=int(st.session_state.get('bathrooms', 1)), key='opt_bathrooms')
+        
+        with col_adj2:
+            # Get area from stored log value or widget state, with fallback
+            current_area_log = st.session_state.get('area_log_value', None)
+            if current_area_log is None:
+                # Try to get from widget state
+                area_sqm_widget = st.session_state.get('area', 80)
+                current_area_log = np.log1p(area_sqm_widget)
+            
+            # Safety check: ensure area value is within reasonable bounds
+            try:
+                current_area_sqm = int(np.expm1(current_area_log))
+                # Clamp to valid range
+                current_area_sqm = max(30, min(300, current_area_sqm))
+            except (ValueError, OverflowError):
+                current_area_sqm = 80  # Default fallback
+            
+            opt_area_sqm = st.slider("Area (m²)", min_value=30, max_value=300, 
+                                     value=current_area_sqm, key='opt_area_sqm')
+            opt_area = np.log1p(opt_area_sqm)
+        
+        with col_adj3:
+            current_energy_idx = ENERGY_CLASSES.index(st.session_state.get('energy_class', 'D'))
+            opt_energy_class = st.selectbox("Energy Class", options=ENERGY_CLASSES, 
+                                            index=current_energy_idx, key='opt_energy_class')
+        
         # Calculate new prediction with adjusted features
         if st.button("🔄 Calculate New Price", type="primary", key='optimize_btn'):
             # Get all current values
-            opt_bathrooms = st.session_state.get('bathrooms', 1)
-            opt_energy_class = st.session_state.get('energy_class', 'D')
-            opt_area = st.session_state.get('area', np.log1p(80))
             opt_external = st.session_state.get('external exposure', 'No')
             opt_cellar = st.session_state.get('Celler', 'No')
             opt_top_floor = st.session_state.get('Top Floor', 'No')
@@ -559,17 +809,27 @@ if st.session_state.prediction_results is not None:
             new_furnished_heating = 1 if new_furnished == 1 and new_heating == 1 else 0
             new_building_layout = calculate_building_layout(new_cellar, new_top_floor)
             
-            # Get location
+            # Get location coordinates (all three levels)
             opt_lat = st.session_state.get('latitude', 45.4642)
             opt_lon = st.session_state.get('longitude', 9.1900)
+            opt_lat_region = st.session_state.get('latitude_region', opt_lat)
+            opt_lon_region = st.session_state.get('longitude_region', opt_lon)
+            opt_lat_city = st.session_state.get('latitude_city', opt_lat)
+            opt_lon_city = st.session_state.get('longitude_city', opt_lon)
+            opt_lat_neighborhood = st.session_state.get('latitude_neighborhood', opt_lat)
+            opt_lon_neighborhood = st.session_state.get('longitude_neighborhood', opt_lon)
             
-            # Build feature array
+            # Build feature array with proper location hierarchy
             new_features = np.array([[
                 new_parking, opt_bathrooms, opt_rooms_adj, new_energy_feature,
                 new_heating, opt_area, new_furnished, new_balcony,
                 new_external, new_fiber, new_gate, new_garden,
-                new_building_layout, new_furnished_heating
-            ] + [opt_lat, opt_lon, opt_lat, opt_lon, opt_lat, opt_lon] + [new_condition_feature]])
+                new_building_layout, new_furnished_heating,
+                opt_lat_region, opt_lon_region,      # Region-level
+                opt_lat_city, opt_lon_city,          # City-level
+                opt_lat_neighborhood, opt_lon_neighborhood,  # Neighborhood-level
+                new_condition_feature
+            ]])
             
             # Predict
             new_result = predict_rent(new_features)
@@ -634,23 +894,6 @@ if st.session_state.prediction_results is not None:
     
     with col_dl2:
         st.caption(f"Report size: {len(report_text)} chars")
-
-
-# Add explanation tooltip (keep the old one)
-with st.expander("ℹ️ How to interpret these results (Legacy)"):
-    st.markdown("""
-    **Confidence Score:** Indicates how certain the model is about this prediction. 
-    - Higher score = more similar properties in training data
-    - Lower score = fewer comparable properties, prediction more uncertain
-    
-    **Confidence Interval:** The range where the actual rent is likely to fall (95% probability).
-    
-    **Feature Contributions:** Shows how each feature affects YOUR price vs a baseline property.
-    - **"Location adds €200"** means your location increases rent by €200 compared to an average location
-    - **"Area reduces €50"** means your property size decreases rent by €50 compared to average
-    - These are marginal contributions - they show the impact of each specific feature
-    - They don't add up to the total price (that's normal for non-linear models)
-    """)
 
 
 # NEIGHBORHOOD PRICE HEATMAP SECTION

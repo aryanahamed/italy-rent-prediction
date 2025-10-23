@@ -9,6 +9,30 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 import json
 from datetime import datetime
+import streamlit as st
+
+
+@st.cache_data(ttl=3600)
+def load_rental_data():
+    """
+    Load and cache the rental dataset to avoid redundant file reads.
+    Cache expires after 1 hour.
+    
+    Returns:
+        DataFrame with rental data and standardized column names
+    """
+    data_path = Path(__file__).parent / 'rents_clean.csv' / 'rents_clean.csv'
+    df = pd.read_csv(data_path)
+    
+    # Rename columns to standardized format
+    df.columns = ['region', 'city', 'neighborhood', 'price', 'datetime', 'parking_spots', 
+                  'bathrooms_per_room', 'bathrooms', 'rooms', 'top_floor', 'condition', 
+                  'energy_class', 'sea_view', 'central_heating', 'area', 'furnished', 
+                  'balcony', 'tv_system', 'external_exposure', 'fiber_optic', 'electric_gate', 
+                  'cellar', 'shared_garden', 'private_garden', 'alarm_system', 'concierge', 
+                  'pool', 'villa', 'entire_property', 'apartment', 'penthouse', 'loft', 'attic']
+    
+    return df
 
 
 def find_similar_properties(
@@ -32,17 +56,8 @@ def find_similar_properties(
         List of similar property dictionaries
     """
     try:
-        # Load rental data
-        data_path = Path(__file__).parent / 'rents_clean.csv' / 'rents_clean.csv'
-        df = pd.read_csv(data_path)
-        
-        # Rename columns
-        df.columns = ['region', 'city', 'neighborhood', 'price', 'datetime', 'parking_spots', 
-                      'bathrooms_per_room', 'bathrooms', 'rooms', 'top_floor', 'condition', 
-                      'energy_class', 'sea_view', 'central_heating', 'area', 'furnished', 
-                      'balcony', 'tv_system', 'external_exposure', 'fiber_optic', 'electric_gate', 
-                      'cellar', 'shared_garden', 'private_garden', 'alarm_system', 'concierge', 
-                      'pool', 'villa', 'entire_property', 'apartment', 'penthouse', 'loft', 'attic']
+        # Issue #2 fix: Use cached data loader
+        df = load_rental_data()
         
         # Convert area from log space to normal space
         area_sqm = np.expm1(area)
@@ -131,17 +146,8 @@ def get_historical_price_trends(
         Tuple of (DataFrame with time series data, statistics dictionary)
     """
     try:
-        # Load rental data
-        data_path = Path(__file__).parent / 'rents_clean.csv' / 'rents_clean.csv'
-        df = pd.read_csv(data_path)
-        
-        # Rename columns
-        df.columns = ['region', 'city', 'neighborhood', 'price', 'datetime', 'parking_spots', 
-                      'bathrooms_per_room', 'bathrooms', 'rooms', 'top_floor', 'condition', 
-                      'energy_class', 'sea_view', 'central_heating', 'area', 'furnished', 
-                      'balcony', 'tv_system', 'external_exposure', 'fiber_optic', 'electric_gate', 
-                      'cellar', 'shared_garden', 'private_garden', 'alarm_system', 'concierge', 
-                      'pool', 'villa', 'entire_property', 'apartment', 'penthouse', 'loft', 'attic']
+        # Issue #2 fix: Use cached data loader
+        df = load_rental_data()
         
         # Filter by city and optionally neighborhood
         if neighborhood:
