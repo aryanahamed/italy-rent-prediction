@@ -10,3 +10,4 @@ joblib
 streamlit
 folium
 streamlit-folium
+xgboost
