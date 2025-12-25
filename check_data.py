@@ -2,14 +2,11 @@ import pandas as pd
 import numpy as np
 import json
 
+from utils import COLUMN_NAMES
+
 # Load original data
 df = pd.read_csv('rents_clean.csv/rents_clean.csv')
-df.columns = ['region', 'city', 'neighborhood', 'price', 'datetime', 'parking_spots', 
-              'bathrooms_per_room', 'bathrooms', 'rooms', 'top_floor', 'condition', 
-              'energy_class', 'sea_view', 'central_heating', 'area', 'furnished', 
-              'balcony', 'tv_system', 'external_exposure', 'fiber_optic', 'electric_gate', 
-              'cellar', 'shared_garden', 'private_garden', 'alarm_system', 'concierge', 
-              'pool', 'villa', 'entire_property', 'apartment', 'penthouse', 'loft', 'attic']
+df.columns = COLUMN_NAMES
 
 print(f"Price sample (first 5): {df['price'].head().tolist()}")
 print(f"Price range: {df['price'].min()} - {df['price'].max()}")

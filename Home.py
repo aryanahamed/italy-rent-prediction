@@ -1,4 +1,3 @@
-import time
 import streamlit as st
 import joblib
 import numpy as np
@@ -73,21 +72,21 @@ if 'prediction_results' not in st.session_state:
     st.session_state.prediction_results = None
 
 st.title('Predict Rent Prices in Italy 🇮🇹', anchor=False)
+st.caption("Note: Data is based on year 2023")
 
 
 def get_binary_value(option):
     """Convert 'Yes'/'No' to binary 1/0."""
     return 1 if option == 'Yes' else 0
 
-def calculate_building_layout(cellar, top_floor):
-    """Calculate building layout feature."""
-    if cellar and top_floor:
-        return 3
-    elif cellar:
-        return 1
-    elif top_floor:
-        return 2
-    return 0
+def calculate_rooms_per_area(rooms, area):
+    return rooms / (area + 1)
+
+def calculate_baths_per_room(bathrooms, rooms):
+    return bathrooms / (rooms + 1)
+
+def calculate_amenity_score(balcony, fiber_optic, electric_gate, shared_garden, external_exposure):
+    return balcony + fiber_optic + electric_gate + shared_garden + external_exposure
 
 def predict_rent(features):
     """
@@ -169,13 +168,14 @@ def geocode_location_level(location_name, country='Italy'):
     
     try:
         url = f"https://photon.komoot.io/api/?q={location_name}, {country}&limit=1"
-        response = requests.get(url, timeout=5)
+        headers = {'User-Agent': 'ItalyRentPrediction/1.0 (https://github.com/aryanahamed/italy-rent-prediction)'}
+        response = requests.get(url, timeout=5, headers=headers)
         if response.status_code == 200:
             features = response.json().get('features', [])
             if features:
                 coords = features[0]['geometry']['coordinates']
                 return coords[1], coords[0]  # lat, lon
-    except:
+    except (requests.RequestException, KeyError, IndexError, ValueError):
         pass
     
     return None, None
@@ -189,8 +189,9 @@ address = st.text_input(
 # Issue #5 fix: Empty address validation
 if address and address.strip():
     photon_url = f"https://photon.komoot.io/api/?q={address} Italy&limit=5"
+    headers = {'User-Agent': 'ItalyRentPrediction/1.0 (https://github.com/aryanahamed/italy-rent-prediction)'}
     try:
-        response = requests.get(photon_url, timeout=10)
+        response = requests.get(photon_url, timeout=10, headers=headers)
         response.raise_for_status()
         
         if response.status_code == 200:
@@ -291,7 +292,7 @@ with st.form(key='rent_form'):
     col1, col2 = st.columns(2)
     with col1:
         rooms = st.number_input('Rooms', min_value=1, key='rooms')
-        area = np.log1p(st.number_input('Area m^2', min_value=30, key='area'))
+        area = st.number_input('Area m^2', min_value=30, key='area')
     
     with col2:
         bathrooms = st.number_input('Bathrooms', min_value=1, key='bathrooms')  
@@ -308,7 +309,8 @@ with st.form(key='rent_form'):
         parking_spots = st.radio('Parking spots', options=['No', 'Yes'], key='parking spots', horizontal=True)
         balcony = st.radio('Balcony', options=['No', 'Yes'], key='balcony', horizontal=True)
         shared_garden = st.radio('Shared Garden', options=['No', 'Yes'], key='shared garden', horizontal=True)
-        cellar = st.radio('Cellar', options=['No', 'Yes'], key='Celler', horizontal=True)
+        cellar = st.radio('Cellar', options=['No', 'Yes'], key='cellar', horizontal=True)
+        pool = st.radio('Pool', options=['No', 'Yes'], key='pool', horizontal=True)
 
     with col4:
         st.caption("Features")
@@ -316,10 +318,13 @@ with st.form(key='rent_form'):
         fiber_optic = st.radio('Fiber Optic', options=['No', 'Yes'], key='fiber optic', horizontal=True)
         electric_gate = st.radio('Electric Gate', options=['No', 'Yes'], key='electric gate', horizontal=True)
         central_heating = st.radio('Central Heating', options=['No', 'Yes'], key='Central Heating', horizontal=True)
+        sea_view = st.radio('Sea View', options=['No', 'Yes'], key='sea view', horizontal=True)
 
     with col5:
         st.caption("Condition & Layout")
-        condition = st.radio('Condition', options=['Good/Habitable', 'Excellent/Renovated'], key='Condition', horizontal=True)
+        condition = st.radio('Condition', 
+                                options=['Good/Habitable', 'Excellent/Renovated', 'New/Under Construction', 'To be Renovated'], 
+                                key='Condition')
         top_floor = st.radio('Top Floor', options=['No', 'Yes'], key='Top Floor', horizontal=True)
         external_exposure = st.radio('External Exposure', options=['No', 'Yes'], key='external exposure', horizontal=True)
     
@@ -333,69 +338,92 @@ if submit_button:
         st.error("⚠️ Please select a valid address from the dropdown suggestions before making a prediction.")
     else:
         # Store area in a separate session state key (can't use 'area' as it's bound to widget)
-        st.session_state['area_log_value'] = area
+        st.session_state['area_value'] = area
         
-        # Get all location coordinates (region, city, neighborhood)
-        lat = st.session_state['latitude']
-        lon = st.session_state['longitude']
-        lat_region = st.session_state.get('latitude_region', lat)
-        lon_region = st.session_state.get('longitude_region', lon)
-        lat_city = st.session_state.get('latitude_city', lat)
-        lon_city = st.session_state.get('longitude_city', lon)
-        lat_neighborhood = st.session_state.get('latitude_neighborhood', lat)
-        lon_neighborhood = st.session_state.get('longitude_neighborhood', lon)
+        # Get all location coordinates (3 levels)
+        # Primary/Neighborhood coordinates
+        lat_neigh = st.session_state.get('latitude_neighborhood', st.session_state['latitude'])
+        lon_neigh = st.session_state.get('longitude_neighborhood', st.session_state['longitude'])
+        
+        # City coordinates
+        lat_city = st.session_state.get('latitude_city', lat_neigh)
+        lon_city = st.session_state.get('longitude_city', lon_neigh)
+        
+        # Region coordinates (model's 'latitude'/'longitude')
+        lat_region = st.session_state.get('latitude_region', lat_city)
+        lon_region = st.session_state.get('longitude_region', lon_city)
     
-    parking_spots = get_binary_value(parking_spots)
-    balcony = get_binary_value(balcony)
-    fiber_optic = get_binary_value(fiber_optic)
-    shared_garden = get_binary_value(shared_garden)
-    cellar = get_binary_value(cellar)
-    furnished = get_binary_value(furnished)
-    external_exposure = get_binary_value(external_exposure)
-    electric_gate = get_binary_value(electric_gate)
-    top_floor = get_binary_value(top_floor)
-    central_heating = get_binary_value(central_heating)
+        parking_spots = get_binary_value(parking_spots)
+        balcony = get_binary_value(balcony)
+        fiber_optic = get_binary_value(fiber_optic)
+        shared_garden = get_binary_value(shared_garden)
+        cellar = get_binary_value(cellar)
+        furnished = get_binary_value(furnished)
+        external_exposure = get_binary_value(external_exposure)
+        electric_gate = get_binary_value(electric_gate)
+        top_floor = get_binary_value(top_floor)
+        central_heating = get_binary_value(central_heating)
+        sea_view = get_binary_value(sea_view)
+        pool = get_binary_value(pool)
 
-    condition_feature = 1 if condition == 'Excellent/Renovated' else 0
-    energy_class_feature = ENERGY_CLASS_MAP[selected_energy_class]
-    furnished_and_central_heating = 1 if furnished == 1 and central_heating == 1 else 0
-    building_layout = calculate_building_layout(cellar, top_floor)
-    
-    # Build feature array with separate region/city/neighborhood coordinates
-    features = np.array([[
-        parking_spots, bathrooms, rooms, energy_class_feature, 
-        central_heating, area, furnished, balcony, 
-        external_exposure, fiber_optic, electric_gate, shared_garden, 
-        building_layout, furnished_and_central_heating,
-        lat_region, lon_region,  # Region-level coordinates
-        lat_city, lon_city,      # City-level coordinates
-        lat_neighborhood, lon_neighborhood,  # Neighborhood-level coordinates
-        condition_feature
-    ]])
-    
-    # Progress bar
-    progress_bar = st.progress(0)
-    progress_bar.progress(0)
-    for i in range(101):
-        time.sleep(0.01)
+        # One-Hot Encoding for Energy Class (Reference: A)
+        ec_B = 1 if selected_energy_class == 'B' else 0
+        ec_C = 1 if selected_energy_class == 'C' else 0
+        ec_D = 1 if selected_energy_class == 'D' else 0
+        ec_E = 1 if selected_energy_class == 'E' else 0
+        ec_F = 1 if selected_energy_class == 'F' else 0
+        ec_G = 1 if selected_energy_class == 'G' else 0
+        ec_Unknown = 0
+
+        # One-Hot Encoding for Condition
+        cond_buono = 1 if condition == 'Good/Habitable' else 0
+        cond_da_rist = 1 if condition == 'To be Renovated' else 0
+        cond_nuovo = 1 if condition == 'New/Under Construction' else 0
+        cond_ottimo = 1 if condition == 'Excellent/Renovated' else 0
+
+        furnished_and_central_heating = 1 if furnished == 1 and central_heating == 1 else 0
         
-        progress_bar.progress(i)
-    
-    # Predict rent price with confidence and feature contributions
-    result = predict_rent(features)
-    
-    if result[0] is not None:
-        euro_est, lower_bound, upper_bound, confidence_score, top_contributors = result
+        # Calculate derived features for new model
+        # Note: area is now passed as raw value
         
-        # Store results in session state
-        st.session_state.prediction_results = {
-            'euro_est': euro_est,
-            'lower_bound': lower_bound,
-            'upper_bound': upper_bound,
-            'confidence_score': confidence_score,
-            'top_contributors': top_contributors,
-            'address': st.session_state.get('address', 'Unknown')
-        }
+        # 1. Rooms per Area
+        rooms_per_area = calculate_rooms_per_area(rooms, area)
+        
+        # 2. Baths per Room
+        baths_per_room = calculate_baths_per_room(bathrooms, rooms)
+        
+        # 3. Amenity Score
+        amenity_score = calculate_amenity_score(balcony, fiber_optic, electric_gate, shared_garden, external_exposure)
+        
+        # Build feature array matching EXACT model feature order (36 features)
+        features = np.array([[
+            parking_spots, bathrooms, rooms, top_floor, sea_view, central_heating, 
+            area, furnished, balcony, external_exposure, fiber_optic, electric_gate, 
+            cellar, shared_garden, pool,
+            ec_B, ec_C, ec_D, ec_E, ec_F, ec_G, ec_Unknown,
+            furnished_and_central_heating,
+            lat_region, lon_region, lat_city, lon_city, lat_neigh, lon_neigh,
+            cond_buono, cond_da_rist, cond_nuovo, cond_ottimo,
+            rooms_per_area, baths_per_room, amenity_score
+        ]])
+        
+        # Show processing indicator
+        with st.spinner("Calculating prediction..."):
+            # Predict rent price with confidence and feature contributions
+            result = predict_rent(features)
+        
+        if result[0] is not None:
+            euro_est, lower_bound, upper_bound, confidence_score, top_contributors = result
+            
+            # Store results in session state
+            st.session_state.prediction_results = {
+                'euro_est': euro_est,
+                'lower_bound': lower_bound,
+                'upper_bound': upper_bound,
+                'confidence_score': confidence_score,
+                'top_contributors': top_contributors,
+                'address': st.session_state.get('address', 'Unknown')
+            }
 
 # Display prediction results if they exist in session state
 if st.session_state.prediction_results is not None:
@@ -546,7 +574,7 @@ if st.session_state.prediction_results is not None:
     with st.spinner("Finding similar properties..."):
         # Get input values from session state if they exist
         input_rooms = st.session_state.get('rooms', 3)
-        input_area = st.session_state.get('area', np.log1p(80))  # Default 80 sqm
+        input_area = st.session_state.get('area', 80)  # Default 80 sqm
         
         similar_props = find_similar_properties(
             city=city_name if city_name else "Milano",
@@ -759,24 +787,23 @@ if st.session_state.prediction_results is not None:
                                       value=int(st.session_state.get('bathrooms', 1)), key='opt_bathrooms')
         
         with col_adj2:
-            # Get area from stored log value or widget state, with fallback
-            current_area_log = st.session_state.get('area_log_value', None)
-            if current_area_log is None:
+            # Get area from stored value or widget state, with fallback
+            current_area = st.session_state.get('area_value', None)
+            if current_area is None:
                 # Try to get from widget state
-                area_sqm_widget = st.session_state.get('area', 80)
-                current_area_log = np.log1p(area_sqm_widget)
+                current_area = st.session_state.get('area', 80)
             
             # Safety check: ensure area value is within reasonable bounds
             try:
-                current_area_sqm = int(np.expm1(current_area_log))
+                current_area = float(current_area)
                 # Clamp to valid range
-                current_area_sqm = max(30, min(300, current_area_sqm))
+                current_area = max(30.0, min(300.0, current_area))
             except (ValueError, OverflowError):
-                current_area_sqm = 80  # Default fallback
+                current_area = 80.0  # Default fallback
             
             opt_area_sqm = st.slider("Area (m²)", min_value=30, max_value=300, 
-                                     value=current_area_sqm, key='opt_area_sqm')
-            opt_area = np.log1p(opt_area_sqm)
+                                     value=int(current_area), key='opt_area_sqm')
+            opt_area = float(opt_area_sqm)
         
         with col_adj3:
             current_energy_idx = ENERGY_CLASSES.index(st.session_state.get('energy_class', 'D'))
@@ -787,7 +814,7 @@ if st.session_state.prediction_results is not None:
         if st.button("🔄 Calculate New Price", type="primary", key='optimize_btn'):
             # Get all current values
             opt_external = st.session_state.get('external exposure', 'No')
-            opt_cellar = st.session_state.get('Celler', 'No')
+            opt_cellar = st.session_state.get('cellar', 'No')
             opt_top_floor = st.session_state.get('Top Floor', 'No')
             opt_condition = st.session_state.get('Condition', 'Good/Habitable')
             
@@ -803,32 +830,64 @@ if st.session_state.prediction_results is not None:
             new_cellar = get_binary_value(opt_cellar)
             new_top_floor = get_binary_value(opt_top_floor)
             
-            # Calculate derived features
+            # Calculate derived features for new model
             new_condition_feature = 1 if opt_condition == 'Excellent/Renovated' else 0
-            new_energy_feature = ENERGY_CLASS_MAP[opt_energy_class]
+            
+            # One-Hot Encoding for Energy Class
+            new_ec_B = 1 if opt_energy_class == 'B' else 0
+            new_ec_C = 1 if opt_energy_class == 'C' else 0
+            new_ec_D = 1 if opt_energy_class == 'D' else 0
+            new_ec_E = 1 if opt_energy_class == 'E' else 0
+            new_ec_F = 1 if opt_energy_class == 'F' else 0
+            new_ec_G = 1 if opt_energy_class == 'G' else 0
+            new_ec_Unknown = 0 
+
+            # One-Hot Encoding for Condition
+            new_cond_buono = 1 if opt_condition == 'Good/Habitable' else 0
+            new_cond_da_rist = 1 if opt_condition == 'To be Renovated' else 0
+            new_cond_nuovo = 1 if opt_condition == 'New/Under Construction' else 0
+            new_cond_ottimo = 1 if opt_condition == 'Excellent/Renovated' else 0
+
             new_furnished_heating = 1 if new_furnished == 1 and new_heating == 1 else 0
-            new_building_layout = calculate_building_layout(new_cellar, new_top_floor)
             
-            # Get location coordinates (all three levels)
-            opt_lat = st.session_state.get('latitude', 45.4642)
-            opt_lon = st.session_state.get('longitude', 9.1900)
-            opt_lat_region = st.session_state.get('latitude_region', opt_lat)
-            opt_lon_region = st.session_state.get('longitude_region', opt_lon)
-            opt_lat_city = st.session_state.get('latitude_city', opt_lat)
-            opt_lon_city = st.session_state.get('longitude_city', opt_lon)
-            opt_lat_neighborhood = st.session_state.get('latitude_neighborhood', opt_lat)
-            opt_lon_neighborhood = st.session_state.get('longitude_neighborhood', opt_lon)
+            # Get fixed values from session state for new features (not optimized)
+            fixed_sea_view = get_binary_value(st.session_state.get('sea view', 'No'))
+            fixed_pool = get_binary_value(st.session_state.get('pool', 'No'))
             
-            # Build feature array with proper location hierarchy
+            # Calculate all derived features for the new model
+            
+            # 1. Rooms per Area
+            new_rooms_per_area = calculate_rooms_per_area(opt_rooms_adj, opt_area)
+            
+            # 2. Baths per Room
+            new_baths_per_room = calculate_baths_per_room(opt_bathrooms, opt_rooms_adj)
+            
+            # Location Coordinates (reuse from session, assume user hasn't moved the pin)
+            # Neighborhood
+            opt_lat_neigh = st.session_state.get('latitude_neighborhood', st.session_state.get('latitude', 45.4642))
+            opt_lon_neigh = st.session_state.get('longitude_neighborhood', st.session_state.get('longitude', 9.1900))
+            
+            # City
+            opt_lat_city = st.session_state.get('latitude_city', opt_lat_neigh)
+            opt_lon_city = st.session_state.get('longitude_city', opt_lon_neigh)
+            
+            # Region
+            opt_lat_region = st.session_state.get('latitude_region', opt_lat_city)
+            opt_lon_region = st.session_state.get('longitude_region', opt_lon_city)
+            
+            # 3. Amenity Score
+            new_amenity_score = calculate_amenity_score(new_balcony, new_fiber, new_gate, new_garden, new_external)
+            
+            # Build feature array matching EXACT model feature order (36 features)
             new_features = np.array([[
-                new_parking, opt_bathrooms, opt_rooms_adj, new_energy_feature,
-                new_heating, opt_area, new_furnished, new_balcony,
-                new_external, new_fiber, new_gate, new_garden,
-                new_building_layout, new_furnished_heating,
-                opt_lat_region, opt_lon_region,      # Region-level
-                opt_lat_city, opt_lon_city,          # City-level
-                opt_lat_neighborhood, opt_lon_neighborhood,  # Neighborhood-level
-                new_condition_feature
+                new_parking, opt_bathrooms, opt_rooms_adj, new_top_floor, fixed_sea_view, new_heating, 
+                opt_area, new_furnished, new_balcony, new_external, new_fiber, new_gate, 
+                new_cellar, new_garden, fixed_pool,
+                new_ec_B, new_ec_C, new_ec_D, new_ec_E, new_ec_F, new_ec_G, new_ec_Unknown,
+                new_furnished_heating,
+                opt_lat_region, opt_lon_region, opt_lat_city, opt_lon_city, opt_lat_neigh, opt_lon_neigh,
+                new_cond_buono, new_cond_da_rist, new_cond_nuovo, new_cond_ottimo,
+                new_rooms_per_area, new_baths_per_room, new_amenity_score
             ]])
             
             # Predict
