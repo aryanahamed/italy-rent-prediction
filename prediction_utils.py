@@ -12,15 +12,22 @@ warnings.filterwarnings('ignore')
 class PredictionAnalyzer:
     """Analyzes predictions and provides confidence scores and feature explanations."""
     
-    def __init__(self, model):
+    def __init__(self, model, feature_medians=None):
         """
         Initialize the analyzer with a trained model.
         
         Args:
             model: Trained XGBRegressor or RandomForestRegressor model
+            feature_medians: Optional array of training feature medians for baseline
+                            computation. If not provided, uses 0 as baseline for
+                            continuous features (simplified approach).
         """
         self.model = model
-        self.feature_names = list(model.feature_names_in_)
+        self.feature_names = list(getattr(
+            model, 'feature_names_in_',
+            [f'feature_{i}' for i in range(model.n_features_in_)]
+        ))
+        self.feature_medians = feature_medians
         self.feature_importances = model.feature_importances_
         
         # Detect model type
@@ -42,6 +49,11 @@ class PredictionAnalyzer:
             Tuple of (prediction, lower_bound, upper_bound, confidence_score)
             confidence_score is between 0-100, where 100 is highest confidence
         """
+        # Ensure single-row input
+        features = np.atleast_2d(features)
+        if features.shape[0] > 1:
+            features = features[:1]  # Use only first row if multiple provided
+        
         # Get base prediction
         mean_prediction = self.model.predict(features)[0]
         
@@ -57,9 +69,13 @@ class PredictionAnalyzer:
             n_samples = 30
             perturbations = []
             
+            # Deterministic seed based on input hash for reproducibility
+            seed = int(abs(np.sum(features * 1000)) % 10000)
+            rng = np.random.RandomState(seed)
+            
             for _ in range(n_samples):
                 # Create small random noise (±5% of feature values)
-                noise = np.random.normal(0, 0.05, features.shape)
+                noise = rng.normal(0, 0.05, features.shape)
                 perturbed_features = features + (features * noise)
                 # Keep binary features as 0 or 1
                 for idx in range(features.shape[1]):
@@ -82,11 +98,14 @@ class PredictionAnalyzer:
         # Calculate confidence score based on relative prediction interval width
         if mean_prediction != 0:
             interval_width = upper_bound - lower_bound
-            relative_interval = interval_width / abs(mean_prediction)
+            # Add epsilon to prevent division by near-zero overflow
+            relative_interval = interval_width / max(abs(mean_prediction), 1e-10)
             
             # Map relative interval to confidence score
             confidence_score = 100 / (1 + np.exp(5 * (relative_interval - 0.5)))
             confidence_score = np.clip(confidence_score, 0, 100)
+            # Replace any NaN values (from overflow/underflow) with midpoint confidence
+            confidence_score = np.nan_to_num(confidence_score, nan=50.0)
         else:
             confidence_score = 50.0
         
@@ -108,40 +127,31 @@ class PredictionAnalyzer:
             List of dictionaries with feature name, contribution, and impact
         """
         contributions = []
+        
+        # Ensure single-row input
+        features = np.atleast_2d(features)
+        if features.shape[0] > 1:
+            features = features[:1]  # Use only first row if multiple provided
+        
         features_flat = features.flatten()
         
         # Calculate baseline values for feature perturbation
+        # NOTE: Using 0 as baseline for continuous features and 0.5 for binary features.
+        # This means "what would the prediction be if this feature were 0/neutral".
+        # While not as accurate as true training data medians, it provides a valid
+        # reference point for measuring feature impact. For better accuracy, pass
+        # feature_medians to the constructor.
         baseline_values = np.zeros(len(self.feature_names))
-        
-        if self.is_random_forest:
-            # Estimate baseline from tree splits (Random Forest specific)
-            for tree in self.model.estimators_[:50]:  # Sample first 50 trees
-                for idx in range(len(self.feature_names)):
-                    try:
-                        threshold = tree.tree_.threshold[0]
-                        if threshold != -2:  # -2 means leaf node
-                            baseline_values[idx] += threshold
-                    except:
-                        pass
-            baseline_values /= 50
-        
-        elif self.is_xgboost:
-            # For XGBoost, use median values as baseline approximation
-            # Use the middle of the feature range as a neutral baseline
-            for idx, val in enumerate(features_flat):
-                if val in [0, 1]:
-                    # Binary feature
-                    baseline_values[idx] = 0.5
-                elif val > 0:
-                    # Continuous feature: use half the current value as baseline
-                    baseline_values[idx] = val * 0.5
-                else:
-                    baseline_values[idx] = 0.0
-        
-        # For binary features, always use 0.5 as baseline (neutral)
         for idx, val in enumerate(features_flat):
             if val in [0, 1]:
+                # Binary feature: use 0.5 as neutral baseline
                 baseline_values[idx] = 0.5
+            elif self.feature_medians is not None and idx < len(self.feature_medians):
+                # Use provided training median if available
+                baseline_values[idx] = self.feature_medians[idx]
+            else:
+                # Continuous feature: use 0 as baseline (simplified approach)
+                baseline_values[idx] = 0.0
         
         # Calculate contribution for each feature
         for idx, feature_name in enumerate(self.feature_names):
@@ -204,7 +214,7 @@ class PredictionAnalyzer:
             'longitude_neighborhood': 'Neighborhood Location (Lon)',
             'condition_ottimo / ristrutturato': 'Excellent Condition'
         }
-        return name_map.get(feature_name, feature_name.title())
+        return name_map.get(feature_name, feature_name.replace('_', ' ').title())
     
     def get_top_contributors(self, contributions: List[Dict], top_n: int = 5) -> List[Dict]:
         """
@@ -218,11 +228,13 @@ class PredictionAnalyzer:
             List of top contributing features
         """
         # Filter out location features for cleaner display (combine their impact)
-        location_features = ['latitude', 'longitude', 'latitude_city', 'longitude_city', 
-                           'latitude_neighborhood', 'longitude_neighborhood']
-        
-        non_location = [c for c in contributions if c['raw_name'] not in location_features]
-        location = [c for c in contributions if c['raw_name'] in location_features]
+        # Use prefix-based matching to avoid hardcoded feature name lists
+        non_location = [c for c in contributions 
+                        if not (c['raw_name'].startswith('latitude') or 
+                                c['raw_name'].startswith('longitude'))]
+        location = [c for c in contributions 
+                    if c['raw_name'].startswith('latitude') or 
+                       c['raw_name'].startswith('longitude')]
         
         # Combine location impact
         if location:
@@ -252,6 +264,11 @@ def format_confidence_level(confidence_score: float) -> str:
     Returns:
         Confidence level string
     """
+    # NOTE: The bucket thresholds are intentionally asymmetric.
+    # "Very High" is harder to reach (≥90) than "Very Low" (<40) because
+    # confidence scores tend to cluster in the 40-75 range for this model.
+    # This asymmetry ensures users see meaningful differentiation at the
+    # upper end while avoiding over-classification as "Very Low".
     if confidence_score >= 90:
         return "Very High"
     elif confidence_score >= 75:
@@ -277,7 +294,9 @@ def format_contribution_text(contribution: Dict) -> str:
     feature = contribution['feature']
     euro_impact = contribution['contribution_euro']
     
-    if abs(euro_impact) < 1:
+    if abs(euro_impact) < 0.01:
+        return f"{feature}: no impact"
+    elif abs(euro_impact) < 1:
         return f"{feature}: minimal impact"
     
     direction = "adds" if euro_impact > 0 else "reduces"

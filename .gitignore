@@ -4,5 +4,7 @@ rents_clean.csv/rents_modified.csv
 /coordinates
 /geocoding_cache
 *.pyc
+__pycache__/
 .github/copilot-instructions.md
-__pycache__/config.cpython-311.pyc
+analysis_output/
+data/

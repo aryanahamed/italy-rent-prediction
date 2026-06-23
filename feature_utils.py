@@ -26,7 +26,7 @@ def find_similar_properties(
     Args:
         city: City name
         rooms: Number of rooms
-        area: Area in square meters (in log space from prediction)
+        area: Area in square meters
         price: Predicted price
         top_n: Number of similar properties to return
         
@@ -40,46 +40,45 @@ def find_similar_properties(
         # Remove price outliers to ensure reliable comparisons
         df = remove_price_outliers(df, column='price', method='iqr')
         
-        # Convert area from log space to normal space
-        area_sqm = area
-        
         # Filter criteria
         df_filtered = df[
             (df['city'].str.lower() == city.lower()) &
             (df['rooms'] >= rooms - 1) & 
             (df['rooms'] <= rooms + 1) &
             (df['area'].notna()) &
-            (df['area'] >= area_sqm * 0.8) & 
-            (df['area'] <= area_sqm * 1.2) &
+            (df['area'] >= area * 0.8) & 
+            (df['area'] <= area * 1.2) &
             (df['price'].notna()) &
             (df['price'] > 0)
         ].copy()
         
         # If city filter yields nothing, try without city constraint
+        city_matched = True
         if len(df_filtered) < top_n:
             df_filtered = df[
                 (df['rooms'] >= rooms - 1) & 
                 (df['rooms'] <= rooms + 1) &
                 (df['area'].notna()) &
-                (df['area'] >= area_sqm * 0.8) & 
-                (df['area'] <= area_sqm * 1.2) &
+                (df['area'] >= area * 0.8) & 
+                (df['area'] <= area * 1.2) &
                 (df['price'].notna()) &
                 (df['price'] > 0)
             ].copy()
+            city_matched = False
         
         if len(df_filtered) == 0:
             return []
         
         # Calculate similarity score based on area and rooms
-        df_filtered['area_diff'] = abs(df_filtered['area'] - area_sqm)
+        df_filtered['area_diff'] = abs(df_filtered['area'] - area)
         df_filtered['rooms_diff'] = abs(df_filtered['rooms'] - rooms)
         df_filtered['price_diff'] = abs(df_filtered['price'] - price)
         
         # Normalize and combine scores
         df_filtered['similarity_score'] = (
-            (1 - df_filtered['area_diff'] / df_filtered['area_diff'].max()) * 0.4 +
+            (1 - df_filtered['area_diff'] / max(df_filtered['area_diff'].max(), 1)) * 0.4 +
             (1 - df_filtered['rooms_diff'] / max(df_filtered['rooms_diff'].max(), 1)) * 0.3 +
-            (1 - df_filtered['price_diff'] / df_filtered['price_diff'].max()) * 0.3
+            (1 - df_filtered['price_diff'] / max(df_filtered['price_diff'].max(), 1)) * 0.3
         )
         
         # Sort by similarity and get top N
@@ -100,7 +99,8 @@ def find_similar_properties(
                 'balcony': 'Yes' if row['balcony'] == 1 else 'No',
                 'parking': 'Yes' if row['parking_spots'] == 1 else 'No',
                 'condition': row['condition'] if pd.notna(row['condition']) else 'N/A',
-                'similarity_score': float(row['similarity_score'])
+                'similarity_score': float(row['similarity_score']),
+                'city_matched': city_matched
             })
         
         return similar_properties
@@ -152,8 +152,12 @@ def get_historical_price_trends(
             return None, {}
         
         # Convert datetime column
+        n_before = len(df_filtered)
         df_filtered['datetime'] = pd.to_datetime(df_filtered['datetime'], errors='coerce')
         df_filtered = df_filtered.dropna(subset=['datetime'])
+        n_dropped = n_before - len(df_filtered)
+        if n_dropped > 0:
+            print(f"Warning: Dropped {n_dropped} rows with invalid dates in historical trend data")
         
         if len(df_filtered) < min_samples:
             return None, {}
@@ -168,7 +172,8 @@ def get_historical_price_trends(
         monthly_avg['year_month'] = monthly_avg['year_month'].dt.to_timestamp()
         
         # Calculate statistics
-        if len(monthly_avg) >= 2:
+        # Require at least 4 data points for trend direction (2 points always give a perfect fit)
+        if len(monthly_avg) >= 4:
             first_price = monthly_avg.iloc[0]['avg_price']
             last_price = monthly_avg.iloc[-1]['avg_price']
             price_change = last_price - first_price
@@ -223,6 +228,10 @@ def calculate_affordability(
     """
     # Italian average monthly net salaries by region (approximate 2023-2024 data)
     # Source: ISTAT (Italian National Institute of Statistics)
+    # URL: https://www.istat.it/en/income-and-productivity/
+    # Last updated: 2024-06 (based on 2023 tax returns)
+    # NOTE: These are static estimates. For production use, consider integrating
+    # a live data source or updating annually.
     regional_salaries = {
         'lombardia': 2000,
         'trentino-alto adige': 1950,
@@ -321,39 +330,43 @@ def generate_prediction_report(
     report_lines.append("PREDICTION SUMMARY")
     report_lines.append("-" * 70)
     report_lines.append(f"Location: {prediction_data.get('address', 'Unknown')}")
-    report_lines.append(f"Predicted Rent: €{prediction_data['euro_est']:.2f} per month")
-    report_lines.append(f"Confidence Score: {prediction_data['confidence_score']:.1f}%")
-    report_lines.append(f"95% Confidence Interval: €{prediction_data['lower_bound']:.2f} - €{prediction_data['upper_bound']:.2f}")
-    range_width = prediction_data['upper_bound'] - prediction_data['lower_bound']
-    report_lines.append(f"Range Width: €{range_width:.2f} (±{(range_width / prediction_data['euro_est'] * 100 / 2):.1f}%)")
+    report_lines.append(f"Predicted Rent: €{prediction_data.get('euro_est', 0):.2f} per month")
+    report_lines.append(f"Confidence Score: {prediction_data.get('confidence_score', 0):.1f}%")
+    lower = prediction_data.get('lower_bound', 0)
+    upper = prediction_data.get('upper_bound', 0)
+    report_lines.append(f"95% Confidence Interval: €{lower:.2f} - €{upper:.2f}")
+    range_width = upper - lower
+    euro_est = prediction_data.get('euro_est', 1)
+    pct = (range_width / euro_est * 100 / 2) if euro_est != 0 else 0
+    report_lines.append(f"Range Width: €{range_width:.2f} (±{pct:.1f}%)")
     report_lines.append("")
     
     # Feature Contributions
     report_lines.append("-" * 70)
     report_lines.append("TOP FEATURES DRIVING THIS PRICE")
     report_lines.append("-" * 70)
-    for i, contrib in enumerate(prediction_data['top_contributors'], 1):
-        impact = contrib['contribution_euro']
+    for i, contrib in enumerate(prediction_data.get('top_contributors', []), 1):
+        impact = contrib.get('contribution_euro', 0)
         direction = "increases" if impact > 0 else "decreases"
-        report_lines.append(f"{i}. {contrib['feature']}: {direction} rent by €{abs(impact):.2f}")
+        report_lines.append(f"{i}. {contrib.get('feature', 'Unknown')}: {direction} rent by €{abs(impact):.2f}")
     report_lines.append("")
     
     # Affordability Analysis
     report_lines.append("-" * 70)
     report_lines.append("AFFORDABILITY ANALYSIS")
     report_lines.append("-" * 70)
-    report_lines.append(f"Affordability Level: {affordability['affordability_level']}")
-    report_lines.append(f"Required Monthly Income (30% rule): €{affordability['required_income']:.2f}")
-    report_lines.append(f"Average Italian Salary: €{affordability['avg_salary']:.2f}")
-    report_lines.append(f"Rent as % of Average Salary: {affordability['pct_of_avg_salary']:.1f}%")
-    if affordability['is_affordable']:
+    report_lines.append(f"Affordability Level: {affordability.get('affordability_level', 'Unknown')}")
+    report_lines.append(f"Required Monthly Income (30% rule): €{affordability.get('required_income', 0):.2f}")
+    report_lines.append(f"Average Italian Salary: €{affordability.get('avg_salary', 0):.2f}")
+    report_lines.append(f"Rent as % of Average Salary: {affordability.get('pct_of_avg_salary', 0):.1f}%")
+    if affordability.get('is_affordable', False):
         report_lines.append("✓ This rent is within the affordable range (≤30% of income)")
     else:
         report_lines.append("⚠ This rent exceeds the recommended 30% affordability threshold")
     report_lines.append("")
     
     # Historical Trends (if available)
-    if historical_stats and historical_stats:
+    if historical_stats:
         report_lines.append("-" * 70)
         report_lines.append("HISTORICAL PRICE TRENDS")
         report_lines.append("-" * 70)

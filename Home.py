@@ -1,6 +1,7 @@
 import streamlit as st
 import joblib
 import numpy as np
+import pandas as pd
 import requests
 import folium
 from folium.plugins import HeatMap, MarkerCluster
@@ -80,10 +81,10 @@ def get_binary_value(option):
     return 1 if option == 'Yes' else 0
 
 def calculate_rooms_per_area(rooms, area):
-    return rooms / (area + 1)
+    return rooms / area if area > 0 else 0
 
 def calculate_baths_per_room(bathrooms, rooms):
-    return bathrooms / (rooms + 1)
+    return bathrooms / rooms if rooms > 0 else 0
 
 def calculate_amenity_score(balcony, fiber_optic, electric_gate, shared_garden, external_exposure):
     return balcony + fiber_optic + electric_gate + shared_garden + external_exposure
@@ -143,7 +144,7 @@ def extract_location_hierarchy(place_properties):
         place_properties: Properties dict from Photon API response
         
     Returns:
-        Tuple of (region, city, neighborhood, state) as strings
+        Tuple of (state, city, neighborhood) as strings
     """
     # Extract available location information
     state = place_properties.get('state', '')  # Region level
@@ -193,90 +194,92 @@ if address and address.strip():
     try:
         response = requests.get(photon_url, timeout=10, headers=headers)
         response.raise_for_status()
+        suggestions = response.json()['features']
         
-        if response.status_code == 200:
-            suggestions = response.json()['features']
+        if suggestions:
+            # Create unique options by adding more context and removing duplicates
+            options = []
+            place_mapping = {}  # Map option label to place index
+            seen = set()
             
-            if suggestions:
-                # Create unique options by adding more context and removing duplicates
-                options = []
-                place_mapping = {}  # Map option label to place index
-                seen = set()
+            for idx, place in enumerate(suggestions):
+                props = place['properties']
+                # Build a more detailed label
+                name = props.get('name', 'Unknown')
+                city = props.get('city', '')
+                state = props.get('state', '')
+                country = props.get('country', 'Italy')
                 
-                for idx, place in enumerate(suggestions):
-                    props = place['properties']
-                    # Build a more detailed label
-                    name = props.get('name', 'Unknown')
-                    city = props.get('city', '')
-                    state = props.get('state', '')
-                    country = props.get('country', 'Italy')
-                    
-                    # Create label with available info
-                    if city and state:
-                        label = f"{name}, {city}, {state}, {country}"
-                    elif city:
-                        label = f"{name}, {city}, {country}"
-                    elif state:
-                        label = f"{name}, {state}, {country}"
-                    else:
-                        label = f"{name}, {country}"
-                    
-                    # Only add if not duplicate
-                    if label not in seen:
-                        options.append(label)
-                        place_mapping[label] = idx
-                        seen.add(label)
-                
-                if not options:
-                    options = [f"{place['properties'].get('name', 'Unknown')}, {place['properties'].get('country', 'Italy')}" for place in suggestions]
-                    place_mapping = {label: idx for idx, label in enumerate(options)}
-                
-                selected_option = st.selectbox("Select an option", options)
-                
-                # Get the correct place using the mapping
-                selected_place = suggestions[place_mapping[selected_option]]
-                lat = selected_place['geometry']['coordinates'][1]
-                lon = selected_place['geometry']['coordinates'][0]
-                
-                # Extract location hierarchy
-                properties = selected_place['properties']
-                state, city, neighborhood = extract_location_hierarchy(properties)
-                
-                # Store primary location coordinates
-                st.session_state['latitude'] = lat
-                st.session_state['longitude'] = lon
-                
-                # Geocode region level (state)
-                if state:
-                    region_lat, region_lon = geocode_location_level(state)
-                    st.session_state['latitude_region'] = region_lat if region_lat else lat
-                    st.session_state['longitude_region'] = region_lon if region_lon else lon
-                    st.session_state['region'] = state
+                # Create label with available info
+                if city and state:
+                    label = f"{name}, {city}, {state}, {country}"
+                elif city:
+                    label = f"{name}, {city}, {country}"
+                elif state:
+                    label = f"{name}, {state}, {country}"
                 else:
-                    st.session_state['latitude_region'] = lat
-                    st.session_state['longitude_region'] = lon
-                    st.session_state['region'] = ''
+                    label = f"{name}, {country}"
                 
-                # Geocode city level
-                if city:
-                    city_lat, city_lon = geocode_location_level(city)
-                    st.session_state['latitude_city'] = city_lat if city_lat else lat
-                    st.session_state['longitude_city'] = city_lon if city_lon else lon
-                    st.session_state['city'] = city
-                else:
-                    st.session_state['latitude_city'] = lat
-                    st.session_state['longitude_city'] = lon
-                    st.session_state['city'] = ''
-                
-                # Neighborhood level uses primary coordinates
-                st.session_state['latitude_neighborhood'] = lat
-                st.session_state['longitude_neighborhood'] = lon
-                st.session_state['neighborhood'] = neighborhood if neighborhood else properties.get('name', '')
-                
+                # Only add if not duplicate
+                if label not in seen:
+                    options.append(label)
+                    place_mapping[label] = idx
+                    seen.add(label)
+            
+            if not options:
+                options = [f"{place['properties'].get('name', 'Unknown')}, {place['properties'].get('country', 'Italy')}" for place in suggestions]
+                place_mapping = {label: idx for idx, label in enumerate(options)}
+            
+            selected_option = st.selectbox("Select an option", options)
+            
+            # Get the correct place using the mapping
+            selected_place = suggestions[place_mapping[selected_option]]
+            lat = selected_place['geometry']['coordinates'][1]
+            lon = selected_place['geometry']['coordinates'][0]
+            
+            # Extract location hierarchy
+            properties = selected_place['properties']
+            state, city, neighborhood = extract_location_hierarchy(properties)
+            
+            # Store primary location coordinates
+            st.session_state['latitude'] = lat
+            st.session_state['longitude'] = lon
+            
+            # Geocode region level (state)
+            if state:
+                region_lat, region_lon = geocode_location_level(state)
+                st.session_state['latitude_region'] = region_lat if region_lat else lat
+                st.session_state['longitude_region'] = region_lon if region_lon else lon
+                st.session_state['region'] = state
+            else:
+                st.session_state['latitude_region'] = lat
+                st.session_state['longitude_region'] = lon
+                st.session_state['region'] = ''
+            
+            # Geocode city level
+            if city:
+                city_lat, city_lon = geocode_location_level(city)
+                st.session_state['latitude_city'] = city_lat if city_lat else lat
+                st.session_state['longitude_city'] = city_lon if city_lon else lon
+                st.session_state['city'] = city
+            else:
+                st.session_state['latitude_city'] = lat
+                st.session_state['longitude_city'] = lon
+                st.session_state['city'] = ''
+            
+            # Neighborhood level uses primary coordinates
+            st.session_state['latitude_neighborhood'] = lat
+            st.session_state['longitude_neighborhood'] = lon
+            st.session_state['neighborhood'] = neighborhood if neighborhood else properties.get('name', '')
+            
+            # Track last shown address to avoid re-rendering map unnecessarily
+            current_addr_key = f"{lat}_{lon}"
+            if 'last_map_address' not in st.session_state or st.session_state.last_map_address != current_addr_key:
                 map_data = {'latitude': [lat], 'longitude': [lon]}
                 st.map(map_data)
-            else:
-                st.write("No suggestions found. Please refine your search.")
+                st.session_state.last_map_address = current_addr_key
+        else:
+            st.write("No suggestions found. Please refine your search.")
     except requests.exceptions.ConnectTimeout:
         st.error("⏱️ Connection to geocoding service timed out. Please try again or enter coordinates manually below.")
     except requests.exceptions.ConnectionError:
@@ -306,27 +309,27 @@ with st.form(key='rent_form'):
     col3, col4, col5 = st.columns(3)
     with col3:
         st.caption("Amenities")
-        parking_spots = st.radio('Parking spots', options=['No', 'Yes'], key='parking spots', horizontal=True)
+        parking_spots = st.radio('Parking spots', options=['No', 'Yes'], key='parking_spots', horizontal=True)
         balcony = st.radio('Balcony', options=['No', 'Yes'], key='balcony', horizontal=True)
-        shared_garden = st.radio('Shared Garden', options=['No', 'Yes'], key='shared garden', horizontal=True)
+        shared_garden = st.radio('Shared Garden', options=['No', 'Yes'], key='shared_garden', horizontal=True)
         cellar = st.radio('Cellar', options=['No', 'Yes'], key='cellar', horizontal=True)
         pool = st.radio('Pool', options=['No', 'Yes'], key='pool', horizontal=True)
 
     with col4:
         st.caption("Features")
         furnished = st.radio('Furnished', options=['No', 'Yes'], key='furnished', horizontal=True)
-        fiber_optic = st.radio('Fiber Optic', options=['No', 'Yes'], key='fiber optic', horizontal=True)
-        electric_gate = st.radio('Electric Gate', options=['No', 'Yes'], key='electric gate', horizontal=True)
-        central_heating = st.radio('Central Heating', options=['No', 'Yes'], key='Central Heating', horizontal=True)
-        sea_view = st.radio('Sea View', options=['No', 'Yes'], key='sea view', horizontal=True)
+        fiber_optic = st.radio('Fiber Optic', options=['No', 'Yes'], key='fiber_optic', horizontal=True)
+        electric_gate = st.radio('Electric Gate', options=['No', 'Yes'], key='electric_gate', horizontal=True)
+        central_heating = st.radio('Central Heating', options=['No', 'Yes'], key='central_heating', horizontal=True)
+        sea_view = st.radio('Sea View', options=['No', 'Yes'], key='sea_view', horizontal=True)
 
     with col5:
         st.caption("Condition & Layout")
         condition = st.radio('Condition', 
                                 options=['Good/Habitable', 'Excellent/Renovated', 'New/Under Construction', 'To be Renovated'], 
-                                key='Condition')
-        top_floor = st.radio('Top Floor', options=['No', 'Yes'], key='Top Floor', horizontal=True)
-        external_exposure = st.radio('External Exposure', options=['No', 'Yes'], key='external exposure', horizontal=True)
+                                key='condition')
+        top_floor = st.radio('Top Floor', options=['No', 'Yes'], key='top_floor', horizontal=True)
+        external_exposure = st.radio('External Exposure', options=['No', 'Yes'], key='external_exposure', horizontal=True)
     
     submit_button = st.form_submit_button(label='Predict Rent', type="primary")
 
@@ -444,7 +447,10 @@ if st.session_state.prediction_results is not None:
     
     with col_conf1:
         st.subheader(f"Confidence: {confidence_level}", anchor=False)
-        st.progress(confidence_score / 100)
+        # Guard against NaN or out-of-range values
+        conf_val = confidence_score / 100 if confidence_score is not None and not (confidence_score != confidence_score) else 0
+        conf_val = max(0.0, min(1.0, conf_val))
+        st.progress(conf_val)
     
     with col_conf2:
         st.metric("Confidence Score", f"{confidence_score:.1f}%")
@@ -452,7 +458,12 @@ if st.session_state.prediction_results is not None:
     # Display prediction range
     st.subheader(f"95% Confidence Interval: €{lower_bound:.0f} - €{upper_bound:.0f}", anchor=False)
     range_width = upper_bound - lower_bound
-    st.caption(f"Range width: €{range_width:.0f} (±{(range_width / euro_est * 100 / 2):.1f}%)")
+    if euro_est > 0 and range_width > 0:
+        st.caption(f"Range width: €{range_width:.0f} (±{(range_width / euro_est * 100 / 2):.1f}%)")
+    elif euro_est > 0:
+        st.caption(f"Range width: €{range_width:.0f}")
+    else:
+        st.caption("Unable to calculate percentage range (estimated price is near zero).")
     
     st.divider()
     
@@ -484,6 +495,8 @@ if st.session_state.prediction_results is not None:
             st.write(f"{direction} {abs(impact/euro_est*100):.1f}%")
     
     st.caption(f"📍 Based on location: {results['address']}")
+    # NOTE: These marginal contributions do not sum to the total price (normal for non-linear models)
+    st.caption("💡 These are marginal contributions showing each feature's individual impact — they do not add up to the total predicted rent (expected for non-linear models).")
     
     # Add explanation tooltip
     with st.expander("ℹ️ How to interpret these results"):
@@ -553,7 +566,9 @@ if st.session_state.prediction_results is not None:
     # Affordability progress bar with clearer label
     st.write("**Rent Burden (% of average salary):**")
     affordability_pct = min(affordability['pct_of_avg_salary'], 100)
-    st.progress(affordability_pct / 100)
+    aff_val = affordability_pct / 100 if affordability_pct is not None and not (affordability_pct != affordability_pct) else 0
+    aff_val = max(0.0, min(1.0, aff_val))
+    st.progress(aff_val)
     col_legend1, col_legend2 = st.columns([1, 3])
     with col_legend1:
         st.caption(f"**Current: {affordability['pct_of_avg_salary']:.1f}%**")
@@ -595,9 +610,10 @@ if st.session_state.prediction_results is not None:
         with col_sim1:
             st.metric("Your Prediction", f"€{euro_est:.0f}")
         with col_sim2:
-            diff = euro_est - avg_similar_price
+            diff = avg_similar_price - euro_est
             st.metric("Similar Props Avg", f"€{avg_similar_price:.0f}", 
-                     delta=f"{diff:+.0f}" if abs(diff) > 1 else "Similar")
+                     delta=f"{diff:+.0f}" if abs(diff) > 1 else "Similar",
+                     delta_color="inverse")
         with col_sim3:
             st.metric("Range", f"€{min_similar_price:.0f} - €{max_similar_price:.0f}")
         
@@ -622,13 +638,13 @@ if st.session_state.prediction_results is not None:
                 
                 with col3:
                     st.write("**Price Comparison:**")
-                    price_diff = euro_est - prop['price']
+                    price_diff = prop['price'] - euro_est
                     if abs(price_diff) < 50:
                         st.write(f"💚 Very similar: €{prop['price']:.0f}")
                     elif price_diff > 0:
-                        st.write(f"🔵 Cheaper: -€{abs(price_diff):.0f}")
-                    else:
                         st.write(f"🔴 Pricier: +€{abs(price_diff):.0f}")
+                    else:
+                        st.write(f"🔵 Cheaper: -€{abs(price_diff):.0f}")
                     st.write(f"• Match: {prop['similarity_score']*100:.0f}%")
     else:
         st.info("No similar properties found in our database for this search criteria.")
@@ -750,13 +766,13 @@ if st.session_state.prediction_results is not None:
         st.write("**Adjust features below to see how they impact the predicted rent:**")
         
         # Get current values from session state
-        current_parking = st.session_state.get('parking spots', 'No')
+        current_parking = st.session_state.get('parking_spots', 'No')
         current_balcony = st.session_state.get('balcony', 'No')
         current_furnished = st.session_state.get('furnished', 'No')
-        current_fiber = st.session_state.get('fiber optic', 'No')
-        current_heating = st.session_state.get('Central Heating', 'No')
-        current_garden = st.session_state.get('shared garden', 'No')
-        current_gate = st.session_state.get('electric gate', 'No')
+        current_fiber = st.session_state.get('fiber_optic', 'No')
+        current_heating = st.session_state.get('central_heating', 'No')
+        current_garden = st.session_state.get('shared_garden', 'No')
+        current_gate = st.session_state.get('electric_gate', 'No')
         
         col_opt1, col_opt2, col_opt3 = st.columns(3)
         
@@ -806,17 +822,18 @@ if st.session_state.prediction_results is not None:
             opt_area = float(opt_area_sqm)
         
         with col_adj3:
-            current_energy_idx = ENERGY_CLASSES.index(st.session_state.get('energy_class', 'D'))
+            current_energy_val = st.session_state.get('energy_class', 'D')
+            current_energy_idx = ENERGY_CLASSES.index(current_energy_val) if current_energy_val in ENERGY_CLASSES else len(ENERGY_CLASSES) // 2
             opt_energy_class = st.selectbox("Energy Class", options=ENERGY_CLASSES, 
                                             index=current_energy_idx, key='opt_energy_class')
         
         # Calculate new prediction with adjusted features
         if st.button("🔄 Calculate New Price", type="primary", key='optimize_btn'):
             # Get all current values
-            opt_external = st.session_state.get('external exposure', 'No')
+            opt_external = st.session_state.get('external_exposure', 'No')
             opt_cellar = st.session_state.get('cellar', 'No')
-            opt_top_floor = st.session_state.get('Top Floor', 'No')
-            opt_condition = st.session_state.get('Condition', 'Good/Habitable')
+            opt_top_floor = st.session_state.get('top_floor', 'No')
+            opt_condition = st.session_state.get('condition', 'Good/Habitable')
             
             # Convert to binary
             new_parking = 1 if opt_parking else 0
@@ -831,7 +848,6 @@ if st.session_state.prediction_results is not None:
             new_top_floor = get_binary_value(opt_top_floor)
             
             # Calculate derived features for new model
-            new_condition_feature = 1 if opt_condition == 'Excellent/Renovated' else 0
             
             # One-Hot Encoding for Energy Class
             new_ec_B = 1 if opt_energy_class == 'B' else 0
@@ -851,7 +867,7 @@ if st.session_state.prediction_results is not None:
             new_furnished_heating = 1 if new_furnished == 1 and new_heating == 1 else 0
             
             # Get fixed values from session state for new features (not optimized)
-            fixed_sea_view = get_binary_value(st.session_state.get('sea view', 'No'))
+            fixed_sea_view = get_binary_value(st.session_state.get('sea_view', 'No'))
             fixed_pool = get_binary_value(st.session_state.get('pool', 'No'))
             
             # Calculate all derived features for the new model
@@ -933,12 +949,19 @@ if st.session_state.prediction_results is not None:
     st.caption("Save your prediction results for future reference")
     
     # Generate report
-    report_text = generate_prediction_report(
-        prediction_data=results,
-        similar_properties=similar_props if similar_props else [],
-        affordability=affordability,
-        historical_stats=hist_stats if hist_stats else None
-    )
+    try:
+        report_text = generate_prediction_report(
+            prediction_data=results,
+            similar_properties=similar_props if 'similar_props' in locals() and similar_props else [],
+            affordability=affordability if 'affordability' in locals() else None,
+            historical_stats=hist_stats if 'hist_stats' in locals() and hist_stats else None
+        )
+    except Exception:
+        report_text = f"Rent Prediction Report\n{'='*40}\n\n"
+        report_text += f"Predicted Rent: €{euro_est:.0f}/month\n"
+        report_text += f"Confidence: {confidence_score:.1f}%\n"
+        report_text += f"95% CI: €{lower_bound:.0f} - €{upper_bound:.0f}\n"
+        report_text += f"Location: {results.get('address', 'Unknown')}\n"
     
     # Download button
     col_dl1, col_dl2 = st.columns([2, 1])
@@ -1016,7 +1039,6 @@ if show_heatmap:
                 search_term = st.text_input("Filter by neighborhood name", "")
                 
                 # Convert to DataFrame for display
-                import pandas as pd
                 neighborhoods_df = pd.DataFrame(neighborhoods)
                 
                 if search_term:
@@ -1219,7 +1241,7 @@ if show_cluster_map:
                 }
                 
                 st.markdown(f"""
-                **{color_emoji[color]} {label}**  
+                **{color_emoji.get(color, '⬜')} {label}**  
                 {price_range_text}  
                 *{count} properties*
                 """)

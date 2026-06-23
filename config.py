@@ -1,6 +1,11 @@
 # -- CONSTANTS --
 # This file contains constants used in the project.
 
+from pathlib import Path
+
+# Data directory (project root — all data paths are relative to this)
+DATA_DIR = Path(__file__).parent
+
 # Model settings
 MARGIN_OF_ERROR = 0.1450747496597613
 
@@ -35,8 +40,17 @@ HEATMAP_MAX_ZOOM = 13
 # Property cluster map settings
 MAX_CLUSTER_PROPERTIES = 2000
 
-# Italy coordinate bounds
+# Italy coordinate bounds (used by map_data.py for coordinate validation)
 ITALY_LAT_MIN = 35
 ITALY_LAT_MAX = 47
 ITALY_LON_MIN = 6
 ITALY_LON_MAX = 19
+
+# Convenience tuple for bounds checks: (lat_min, lat_max, lon_min, lon_max)
+ITALY_BOUNDS = (ITALY_LAT_MIN, ITALY_LAT_MAX, ITALY_LON_MIN, ITALY_LON_MAX)
+
+# Center of Italy (approximately Rome area) — used as default map center
+ITALY_CENTER_COORDS = (41.9028, 12.4964)
+
+# Minimum realistic rent for outlier filtering
+MIN_RENT = 50.0
