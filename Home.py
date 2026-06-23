@@ -8,7 +8,7 @@ from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
 import plotly.graph_objects as go
 import plotly.express as px
-from config import ENERGY_CLASSES, ENERGY_CLASS_MAP, MARGIN_OF_ERROR
+from config import ENERGY_CLASSES, ENERGY_CLASS_MAP, MARGIN_OF_ERROR, ITALY_CENTER_COORDS
 from prediction_utils import (
     PredictionAnalyzer,
     format_confidence_level,
@@ -16,7 +16,6 @@ from prediction_utils import (
 )
 from map_data import (
     load_neighborhood_price_data, 
-    get_italy_center_coords,
     load_property_cluster_data,
     get_price_category
 )
@@ -1007,7 +1006,7 @@ if show_heatmap:
                 st.metric("Max Price", f"€{stats['max_price']:.0f}/mo")
             
             # Create folium map
-            center_lat, center_lon = get_italy_center_coords()
+            center_lat, center_lon = ITALY_CENTER_COORDS
             m = folium.Map(
                 location=[center_lat, center_lon],
                 zoom_start=6,
@@ -1153,7 +1152,7 @@ if show_cluster_map:
             st.metric("Most Common", most_common.split('(')[0].strip())
         
         # Create map with clusters
-        center_lat, center_lon = get_italy_center_coords()
+        center_lat, center_lon = ITALY_CENTER_COORDS
         m = folium.Map(
             location=[center_lat, center_lon],
             zoom_start=6,
