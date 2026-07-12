@@ -3,16 +3,35 @@
 
 from pathlib import Path
 
-# Data directory (project root — all data paths are relative to this)
-DATA_DIR = Path(__file__).parent
+# PROJECT_ROOT — all data paths are relative to this.
+# NOTE: Despite the name DATA_DIR, this is the PROJECT ROOT (Path(__file__).parent),
+# not a 'data/' subdirectory. Subdirectories like 'data/', 'geocoding_cache/',
+# and 'rent_prediction_model/' sit under this root.
+PROJECT_ROOT = Path(__file__).parent
+DATA_DIR = PROJECT_ROOT  # alias for backward compatibility
+
+# Subdirectory for raw/processed data files
+DATA_SUBDIR = 'data'  # relative to PROJECT_ROOT
 
 # Model settings
 MARGIN_OF_ERROR = 0.1450747496597613
 
-# Energy class configuration
-ENERGY_CLASSES = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+# Data contract exposed by the deployed model. Values outside these bounds are
+# not represented by the source data used by the application and must not be
+# silently extrapolated.
+MIN_ROOMS = 1
+MAX_ROOMS = 5
+MIN_BATHROOMS = 1
+MAX_BATHROOMS = 3
+MIN_AREA_M2 = 30
+MAX_AREA_M2 = 300
+
+# Energy class configuration. Unknown is a real model category and should not
+# be silently replaced with the previous default (D).
+ENERGY_CLASSES = ['Unknown', 'A', 'B', 'C', 'D', 'E', 'F', 'G']
 
 ENERGY_CLASS_MAP = {
+    'Unknown': 0.0,
     'A': 1.0,
     'B': 0.6,
     'C': 0.3,
@@ -26,6 +45,13 @@ ENERGY_CLASS_MAP = {
 PHOTON_API_BASE_URL = "https://photon.komoot.io/api/"
 GEOCODING_TIMEOUT = 5  # seconds
 GEOCODING_LIMIT = 5
+PHOTON_COUNTRY_CODE = "IT"
+
+# Current source/provenance limits. These features remain disabled until their
+# underlying data contracts are rebuilt and validated.
+DATA_AS_OF = "2023-12-07"
+HISTORICAL_TRENDS_ENABLED = False
+GEOGRAPHIC_MAPS_ENABLED = False
 
 # Prediction analyzer settings
 TOP_CONTRIBUTORS_COUNT = 5

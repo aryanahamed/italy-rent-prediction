@@ -23,10 +23,10 @@ class TestRemovePriceOutliers:
         result = remove_price_outliers(df)
         assert len(result) == 0
 
-    def test_missing_column_returns_unchanged(self):
+    def test_missing_column_raises_contract_error(self):
         df = pd.DataFrame({'other': [1, 2, 3]})
-        result = remove_price_outliers(df, column='price')
-        assert len(result) == 3
+        with pytest.raises(ValueError, match="Required outlier column 'price'"):
+            remove_price_outliers(df, column='price')
 
     def test_all_nan_column(self):
         df = pd.DataFrame({'price': [np.nan, np.nan]})
@@ -107,6 +107,11 @@ class TestRemovePriceOutliers:
         df = pd.DataFrame({'price': [800, 800, 800]})
         result = remove_price_outliers(df, method='zscore')
         assert len(result) == 3
+
+    def test_zscore_zero_std_still_applies_minimum_rent(self):
+        df = pd.DataFrame({'price': [20, 20, 20]})
+        result = remove_price_outliers(df, method='zscore', min_rent=50)
+        assert result.empty
 
     def test_negative_prices_filtered_by_min_rent(self):
         """Negative prices filtered below min_rent (MU-8)."""

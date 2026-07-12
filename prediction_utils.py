@@ -1,16 +1,50 @@
-"""
-Prediction utilities for rent price estimation.
-Provides confidence scores and feature importance explanations.
-"""
+"""Prediction diagnostics and model sensitivity explanations."""
 import numpy as np
 from typing import Tuple, List, Dict
 import warnings
 
+from config import (
+    MAX_AREA_M2,
+    MAX_BATHROOMS,
+    MAX_ROOMS,
+    MIN_AREA_M2,
+    MIN_BATHROOMS,
+    MIN_ROOMS,
+)
+
 warnings.filterwarnings('ignore')
 
 
+# Binary feature names (from model.feature_names_in_) — used to identify
+# features that are truly 0/1 flags and should not be perturbed during
+# stability estimation, or assigned a zero (not present) reference during
+# analysis. Value-based detection (features[0, idx] in [0, 1])
+# misclassifies count features (bathrooms, rooms) when they happen to be 1.
+# Both space-separated and underscore-separated variants are included
+# since feature names may vary across model serialization.
+BINARY_FEATURE_NAMES = frozenset({
+    'parking spots', 'parking_spots', 'top floor', 'top_floor',
+    'sea view', 'sea_view', 'central heating', 'central_heating',
+    'furnished', 'balcony',
+    'external exposure', 'external_exposure',
+    'fiber optic', 'fiber_optic',
+    'electric gate', 'electric_gate',
+    'cellar', 'shared garden', 'shared_garden', 'pool',
+    'tv_system', 'tv system',
+    'private_garden', 'private garden',
+    'alarm_system', 'alarm system',
+    'concierge', 'villa', 'entire_property', 'entire property',
+    'apartment', 'penthouse', 'loft', 'attic',
+    'energy class_B', 'energy class_C', 'energy class_D',
+    'energy class_E', 'energy class_F', 'energy class_G',
+    'energy class_Unknown',
+    'condition_buono / abitabile', 'condition_da ristrutturare',
+    'condition_nuovo / in costruzione', 'condition_ottimo / ristrutturato'
+})
+
+
 class PredictionAnalyzer:
-    """Analyzes predictions and provides confidence scores and feature explanations."""
+    """Analyze local input stability and one-feature model sensitivity."""
     
     def __init__(self, model, feature_medians=None):
         """
@@ -18,9 +52,9 @@ class PredictionAnalyzer:
         
         Args:
             model: Trained XGBRegressor or RandomForestRegressor model
-            feature_medians: Optional array of training feature medians for baseline
-                            computation. If not provided, uses 0 as baseline for
-                            continuous features (simplified approach).
+            feature_medians: Optional array of training feature medians for reference
+                            computation. Continuous features are omitted when these
+                            medians are unavailable.
         """
         self.model = model
         self.feature_names = list(getattr(
@@ -37,17 +71,19 @@ class PredictionAnalyzer:
         
     def calculate_confidence_score(self, features: np.ndarray) -> Tuple[float, float, float, float]:
         """
-        Calculate prediction confidence score based on model uncertainty.
+        Calculate an input-perturbation stability score.
         
-        For Random Forest: Uses standard deviation of individual tree predictions.
-        For XGBoost: Uses quantile prediction approach or feature-based uncertainty.
+        Area is varied by ±5%, and rooms/bathrooms by one within supported
+        bounds. Derived ratios are recomputed so the model never receives an
+        internally contradictory synthetic property.
         
         Args:
             features: Input features for prediction
             
         Returns:
-            Tuple of (prediction, lower_bound, upper_bound, confidence_score)
-            confidence_score is between 0-100, where 100 is highest confidence
+            Tuple of (prediction, lower_bound, upper_bound, stability_score).
+            The range is an empirical perturbation range, not a calibrated
+            prediction interval or probability statement.
         """
         # Ensure single-row input
         features = np.atleast_2d(features)
@@ -57,67 +93,65 @@ class PredictionAnalyzer:
         # Get base prediction
         mean_prediction = self.model.predict(features)[0]
         
-        if self.is_random_forest:
-            # Random Forest: Use tree predictions variance
-            tree_predictions = np.array([tree.predict(features)[0] 
-                                        for tree in self.model.estimators_])
-            std_prediction = np.std(tree_predictions)
-        
-        elif self.is_xgboost:
-            # XGBoost: Estimate uncertainty using feature perturbation
-            # Apply small random perturbations and measure prediction variance
-            n_samples = 30
-            perturbations = []
-            
-            # Deterministic seed based on input hash for reproducibility
-            seed = int(abs(np.sum(features * 1000)) % 10000)
-            rng = np.random.RandomState(seed)
-            
-            for _ in range(n_samples):
-                # Create small random noise (±5% of feature values)
-                noise = rng.normal(0, 0.05, features.shape)
-                perturbed_features = features + (features * noise)
-                # Keep binary features as 0 or 1
-                for idx in range(features.shape[1]):
-                    if features[0, idx] in [0, 1]:
-                        perturbed_features[0, idx] = features[0, idx]
-                
-                pred = self.model.predict(perturbed_features)[0]
-                perturbations.append(pred)
-            
-            std_prediction = np.std(perturbations)
-        
+        name_to_index = {str(name): idx for idx, name in enumerate(self.feature_names)}
+        scenarios = []
+
+        def add_scenario(feature_name, value):
+            idx = name_to_index.get(feature_name)
+            if idx is None or value == features[0, idx]:
+                return
+            scenario = features.copy()
+            scenario[0, idx] = value
+            rooms_idx = name_to_index.get('rooms')
+            bathrooms_idx = name_to_index.get('bathrooms')
+            area_idx = name_to_index.get('area')
+            rooms_area_idx = name_to_index.get('rooms_per_area')
+            baths_room_idx = name_to_index.get('baths_per_room')
+            if rooms_area_idx is not None and rooms_idx is not None and area_idx is not None:
+                scenario[0, rooms_area_idx] = scenario[0, rooms_idx] / scenario[0, area_idx]
+            if baths_room_idx is not None and bathrooms_idx is not None and rooms_idx is not None:
+                scenario[0, baths_room_idx] = scenario[0, bathrooms_idx] / scenario[0, rooms_idx]
+            scenarios.append(scenario)
+
+        if 'area' in name_to_index:
+            area = float(features[0, name_to_index['area']])
+            add_scenario('area', max(MIN_AREA_M2, area * 0.95))
+            add_scenario('area', min(MAX_AREA_M2, area * 1.05))
+        if 'rooms' in name_to_index:
+            rooms = int(round(features[0, name_to_index['rooms']]))
+            add_scenario('rooms', max(MIN_ROOMS, rooms - 1))
+            add_scenario('rooms', min(MAX_ROOMS, rooms + 1))
+        if 'bathrooms' in name_to_index:
+            bathrooms = int(round(features[0, name_to_index['bathrooms']]))
+            add_scenario('bathrooms', max(MIN_BATHROOMS, bathrooms - 1))
+            add_scenario('bathrooms', min(MAX_BATHROOMS, bathrooms + 1))
+
+        scenario_predictions = [self.model.predict(scenario)[0] for scenario in scenarios]
+        lower_bound = min(scenario_predictions + [mean_prediction])
+        upper_bound = max(scenario_predictions + [mean_prediction])
+
+        lower_bound = min(float(lower_bound), float(mean_prediction))
+        upper_bound = max(float(upper_bound), float(mean_prediction))
+
+        # Compare width in euros, not log-target units.
+        euro_prediction = np.expm1(mean_prediction)
+        if euro_prediction != 0:
+            interval_width = np.expm1(upper_bound) - np.expm1(lower_bound)
+            relative_interval = interval_width / max(abs(euro_prediction), 1e-10)
+            stability_score = np.clip(100 * (1 - relative_interval), 0, 100)
+            stability_score = np.nan_to_num(stability_score, nan=0.0)
         else:
-            # Unknown model type: use conservative estimate
-            std_prediction = abs(mean_prediction) * 0.15
-        
-        # Calculate prediction interval (95% confidence interval)
-        lower_bound = mean_prediction - 1.96 * std_prediction
-        upper_bound = mean_prediction + 1.96 * std_prediction
-        
-        # Calculate confidence score based on relative prediction interval width
-        if mean_prediction != 0:
-            interval_width = upper_bound - lower_bound
-            # Add epsilon to prevent division by near-zero overflow
-            relative_interval = interval_width / max(abs(mean_prediction), 1e-10)
-            
-            # Map relative interval to confidence score
-            confidence_score = 100 / (1 + np.exp(5 * (relative_interval - 0.5)))
-            confidence_score = np.clip(confidence_score, 0, 100)
-            # Replace any NaN values (from overflow/underflow) with midpoint confidence
-            confidence_score = np.nan_to_num(confidence_score, nan=50.0)
-        else:
-            confidence_score = 50.0
+            stability_score = 0.0
         
         # Convert to Python native types for Streamlit compatibility
-        return float(mean_prediction), float(lower_bound), float(upper_bound), float(confidence_score)
+        return float(mean_prediction), float(lower_bound), float(upper_bound), float(stability_score)
     
     def get_feature_contributions(self, features: np.ndarray, base_prediction: float) -> List[Dict]:
         """
         Calculate individual feature contributions to the prediction.
         
         Uses a perturbation approach: measures how prediction changes when each
-        feature is set to its mean training value.
+        feature is set to a stated reference value.
         
         Args:
             features: Input features for prediction
@@ -135,26 +169,20 @@ class PredictionAnalyzer:
         
         features_flat = features.flatten()
         
-        # Calculate baseline values for feature perturbation
-        # NOTE: Using 0 as baseline for continuous features and 0.5 for binary features.
-        # This means "what would the prediction be if this feature were 0/neutral".
-        # While not as accurate as true training data medians, it provides a valid
-        # reference point for measuring feature impact. For better accuracy, pass
-        # feature_medians to the constructor.
-        baseline_values = np.zeros(len(self.feature_names))
-        for idx, val in enumerate(features_flat):
-            if val in [0, 1]:
-                # Binary feature: use 0.5 as neutral baseline
-                baseline_values[idx] = 0.5
-            elif self.feature_medians is not None and idx < len(self.feature_medians):
-                # Use provided training median if available
-                baseline_values[idx] = self.feature_medians[idx]
-            else:
-                # Continuous feature: use 0 as baseline (simplified approach)
+        # Only use references with a defensible meaning. Binary features compare
+        # against "not present" (0); continuous features require a supplied
+        # training median and are omitted otherwise.
+        baseline_values = np.full(len(self.feature_names), np.nan)
+        for idx, _ in enumerate(features_flat):
+            if self.feature_names[idx] in BINARY_FEATURE_NAMES:
                 baseline_values[idx] = 0.0
+            elif self.feature_medians is not None and idx < len(self.feature_medians):
+                baseline_values[idx] = self.feature_medians[idx]
         
         # Calculate contribution for each feature
         for idx, feature_name in enumerate(self.feature_names):
+            if np.isnan(baseline_values[idx]):
+                continue
             # Skip if very low importance
             if self.feature_importances[idx] < 0.001:
                 continue
@@ -212,7 +240,17 @@ class PredictionAnalyzer:
             'longitude_city': 'City Location (Lon)',
             'latitude_neighborhood': 'Neighborhood Location (Lat)',
             'longitude_neighborhood': 'Neighborhood Location (Lon)',
-            'condition_ottimo / ristrutturato': 'Excellent Condition'
+            'condition_ottimo / ristrutturato': 'Excellent Condition',
+            'condition_buono / abitabile': 'Good Condition',
+            'condition_da ristrutturare': 'To Be Renovated',
+            'condition_nuovo / in costruzione': 'New/Under Construction',
+            'rooms_per_area': 'Rooms per Area (m²)',
+            'baths_per_room': 'Baths per Room',
+            'amenity_score': 'Amenity Score',
+            'top floor': 'Top Floor',
+            'sea view': 'Sea View',
+            'cellar': 'Cellar',
+            'pool': 'Pool'
         }
         return name_map.get(feature_name, feature_name.replace('_', ' ').title())
     
@@ -281,6 +319,19 @@ def format_confidence_level(confidence_score: float) -> str:
         return "Very Low"
 
 
+def format_stability_level(stability_score: float) -> str:
+    """Describe perturbation stability without implying statistical confidence."""
+    if stability_score >= 90:
+        return "Very Stable"
+    if stability_score >= 75:
+        return "Stable"
+    if stability_score >= 60:
+        return "Moderately Stable"
+    if stability_score >= 40:
+        return "Sensitive"
+    return "Very Sensitive"
+
+
 def format_contribution_text(contribution: Dict) -> str:
     """
     Format a feature contribution as readable text.
@@ -299,5 +350,5 @@ def format_contribution_text(contribution: Dict) -> str:
     elif abs(euro_impact) < 1:
         return f"{feature}: minimal impact"
     
-    direction = "adds" if euro_impact > 0 else "reduces"
-    return f"{feature} {direction} €{abs(euro_impact):.0f}"
+    direction = "higher" if euro_impact > 0 else "lower"
+    return f"{feature}: estimate €{abs(euro_impact):.0f} {direction} vs reference"

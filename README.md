@@ -1,5 +1,5 @@
 # Italy Rent Prediction
-This repository aims to analyse and predict rent prices  in various regions of Italy using machine learning algorithms. This is a fun hobby project.
+This hobby project estimates advertised monthly rents for Italian properties from an archived listing snapshot.
 
 ## Installation
 To get started with this project, clone the repository and install the necessary dependencies:
@@ -12,9 +12,7 @@ pip install -r requirements.txt
 Alternatively, make changes on the notebook directly after cloning.
 
 ## Data Collection
-All the data is collected from the following database.
-
-https://www.kaggle.com/datasets/tommasoramella/italy-house-prices/data.
+The deployed model uses the [Italy house-prices dataset on Kaggle](https://www.kaggle.com/datasets/tommasoramella/italy-house-prices/data). The app currently describes this source as data through 2023-12-07. It is not a live rent feed or a longitudinal market dataset.
 
 ## Usage
 Check the following page to try out the model.
@@ -32,19 +30,23 @@ streamlit run Home.py
 
 ### Model
 - **Algorithm**: XGBoost Regressor
-- **Features**: 21 features including location, size, amenities, and condition
+- **Features**: 36 model inputs including location, size, amenities, condition, and derived ratios
 - **Target**: Log-transformed rent price (to handle skewness)
 
-### Confidence Score Calculation
-The confidence score (0-100%) is estimated using feature perturbation analysis:
-- **High confidence**: Predictions remain stable with small input variations
-- **Low confidence**: Predictions vary significantly, indicating uncertainty
+### Input Stability Diagnostic
 
-### Feature Importance
-Feature contributions are calculated using the model's learned importance weights, providing monetary impact for each property attribute:
-- Location features are aggregated for clarity
-- Both positive and negative impacts are shown
-- Top 5 most influential features are displayed
+The stability score varies supported property inputs locally: area by ±5% and rooms/bathrooms by one within the app's bounds. Derived ratios are recomputed for every scenario. The displayed range and 0–100 score describe local model sensitivity only; they are not a confidence interval, accuracy estimate, or probability statement.
+
+### One-Feature Sensitivity
+
+Binary and encoded-category flags are compared with a stated zero reference while the other inputs stay fixed. Continuous and derived features are omitted unless a defensible training reference is available. These checks are model associations, not causal effects, and do not form an additive price breakdown.
+
+### Current Data Limitations
+
+- Historical price trends are unavailable because a listing snapshot cannot establish change over time.
+- Geographic rental maps are temporarily unavailable because the legacy coordinate cache is keyed only by neighborhood name and can merge places that share a name.
+- Comparable records are restricted to the selected city and matched only on rooms and area; the model estimate is not used to choose them.
+- Affordability is calculated only when the user supplies monthly disposable household income. The 30% ratio is presented as a reference, not personalized financial advice.
 
 
 ## Sample Plots

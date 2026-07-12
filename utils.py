@@ -21,6 +21,17 @@ COLUMN_NAMES = [
     'pool', 'villa', 'entire_property', 'apartment', 'penthouse', 'loft', 'attic'
 ]
 
+SOURCE_COLUMN_NAMES = [
+    'regione', 'citta', 'quartiere', 'prezzo', 'datetime', 'posti auto',
+    'bagni per stanza', 'bagni', 'stanze', 'ultimo piano', 'stato',
+    'classe energetica', 'vista mare', 'riscaldamento centralizzato',
+    'superficie', 'arredato', 'balcone', 'impianto tv',
+    'esposizione esterna', 'fibra ottica', 'cancello elettrico', 'cantina',
+    'giardino comune', 'giardino privato', 'impianto allarme', 'portiere',
+    'piscina', 'villa', 'intera proprieta', 'appartamento', 'attico', 'loft',
+    'mansarda'
+]
+
 
 def remove_price_outliers(df: pd.DataFrame, column: str = 'price',
                           method: str = 'iqr', min_rent: float = MIN_RENT) -> pd.DataFrame:
@@ -42,8 +53,10 @@ def remove_price_outliers(df: pd.DataFrame, column: str = 'price',
     Raises:
         ValueError: If an unsupported method string is provided.
     """
-    if df.empty or column not in df.columns:
+    if df.empty:
         return df
+    if column not in df.columns:
+        raise ValueError(f"Required outlier column '{column}' is missing")
 
     # Remove NaN values first
     df_clean = df.dropna(subset=[column]).copy()
@@ -74,8 +87,8 @@ def remove_price_outliers(df: pd.DataFrame, column: str = 'price',
         mean = df_clean[column].mean()
         std = df_clean[column].std()
 
-        if std == 0:                       # No variance — nothing to filter
-            return df_clean
+        if not np.isfinite(std) or std == 0:
+            return df_clean[df_clean[column] >= min_rent].copy()
 
         z_lower = mean - 3 * std
         z_upper = mean + 3 * std
@@ -110,7 +123,14 @@ def load_rental_data() -> pd.DataFrame:
     # MU-1: Use shared DATA_DIR constant instead of bogus path construction
     csv_file = DATA_DIR / 'rents_clean.csv' / 'rents_clean.csv'
     df = pd.read_csv(csv_file)
-    df.columns = COLUMN_NAMES
+    incoming = list(df.columns)
+    if incoming == SOURCE_COLUMN_NAMES:
+        df.columns = COLUMN_NAMES
+    elif incoming != COLUMN_NAMES:
+        raise ValueError(
+            "Rental CSV schema mismatch. Expected the canonical Italian or English "
+            f"33-column schema, received: {incoming}"
+        )
     return df
 
 

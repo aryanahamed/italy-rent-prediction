@@ -6,13 +6,22 @@ import pandas as pd
 import streamlit as st
 from typing import Any, Dict, List, Optional, Tuple
 
-from config import ITALY_BOUNDS, ITALY_CENTER_COORDS
+from config import ITALY_BOUNDS, ITALY_CENTER_COORDS, MAX_CLUSTER_PROPERTIES, MIN_RENT
 from utils import (
     COLUMN_NAMES,
     load_neighborhood_coordinates,
     load_rental_data,
-    remove_price_outliers,
 )
+
+
+def _format_binary_value(value) -> str:
+    if pd.isna(value):
+        return 'Unknown'
+    if value == 1:
+        return 'Yes'
+    if value == 0:
+        return 'No'
+    return 'Unknown'
 
 # Unpack bounds tuple for easy use
 ITALY_LAT_MIN, ITALY_LAT_MAX, ITALY_LON_MIN, ITALY_LON_MAX = ITALY_BOUNDS
@@ -30,8 +39,10 @@ def _validate_coords(lat: float, lon: float) -> bool:
 @st.cache_data(ttl=3600)
 def load_neighborhood_price_data():
     """
-    Load and process neighborhood data for heatmap visualization.
-    Filters price outliers to ensure representative neighborhood averages.
+    Load and process legacy neighborhood data for heatmap visualization.
+
+    The public app keeps this view disabled until coordinates are contextualized
+    by city and region. This loader remains for migration and contract tests.
 
     Returns:
         list: List of [latitude, longitude, normalized_price] for heatmap
@@ -64,11 +75,9 @@ def load_neighborhood_price_data():
         st.error(f"Failed to load rental data: {e}")
         return [], {}, []
 
-    # Remove price outliers for accurate neighborhood averages
-    df = remove_price_outliers(df, column='price', method='iqr')
-
     # MU-6: Drop rows with missing neighborhood before groupby
     df = df.dropna(subset=['neighborhood'])
+    df = df[df['price'] >= MIN_RENT]
 
     # Calculate average price per neighborhood
     neighborhood_avg_prices = df.groupby('neighborhood')['price'].mean().to_dict()
@@ -107,13 +116,14 @@ def load_neighborhood_price_data():
                     'property_count': len(df[df['neighborhood'] == neighborhood])
                 })
 
-    # Calculate statistics
-    all_prices = [point[2] for point in heatmap_data]
+    # Calculate statistics using actual euro prices from valid_neighborhoods
+    # (BUG C1 fix: was using normalized 0-1 values from heatmap_data instead of euro amounts)
+    all_prices = [n['avg_price'] for n in valid_neighborhoods]
     stats = {
         'min_price': min(all_prices) if all_prices else 0,
         'max_price': max(all_prices) if all_prices else 0,
         'avg_price': sum(all_prices) / len(all_prices) if all_prices else 0,
-        'neighborhood_count': len(heatmap_data),
+        'neighborhood_count': len(valid_neighborhoods),
     }
 
     return heatmap_data, stats, valid_neighborhoods
@@ -166,9 +176,6 @@ def load_property_cluster_data(
         st.error(f"Failed to load rental data: {e}")
         return []
 
-    # Remove price outliers for accurate cluster representation
-    df = remove_price_outliers(df, column='price', method='iqr')
-
     # Clean and filter data — log how many rows dropped (MU-9)
     before_drop = len(df)
     df = df.dropna(subset=['price', 'neighborhood', 'rooms'])
@@ -177,11 +184,12 @@ def load_property_cluster_data(
     if dropped > 0:
         st.caption(f"⚠️ Dropped {dropped} rows with missing price/neighborhood/rooms data.")
 
-    df = df[(df['price'] >= price_min) & (df['price'] <= price_max)]
+    effective_price_min = max(price_min, MIN_RENT)
+    df = df[(df['price'] >= effective_price_min) & (df['price'] <= price_max)]
     df = df[(df['rooms'] >= rooms_min) & (df['rooms'] <= rooms_max)]
 
     # Sample data to avoid overwhelming the map (max 2000 properties)
-    max_props = 2000
+    max_props = MAX_CLUSTER_PROPERTIES
     if len(df) > max_props:
         df = df.sample(n=max_props, random_state=random_state)
 
@@ -205,10 +213,10 @@ def load_property_cluster_data(
                     'city': row['city'] if pd.notna(row['city']) else 'Unknown',
                     'neighborhood': neighborhood,
                     'energy_class': row['energy_class'] if pd.notna(row['energy_class']) else 'N/A',
-                    'furnished': 'Yes' if row['furnished'] == 1 else 'No',
+                    'furnished': _format_binary_value(row['furnished']),
                     'bathrooms': int(row['bathrooms']) if pd.notna(row['bathrooms']) else 0,
-                    'balcony': 'Yes' if row['balcony'] == 1 else 'No',
-                    'parking': 'Yes' if row['parking_spots'] == 1 else 'No',
+                    'balcony': _format_binary_value(row['balcony']),
+                    'parking': _format_binary_value(row['parking_spots']),
                 }
                 properties.append(property_data)
 
@@ -225,15 +233,15 @@ def get_price_category(price: float) -> Dict[str, Any]:
     Returns:
         dict: Category info with color and label
     """
-    # Note: Negative prices are not present in the current dataset (MU-13),
-    # so they would fall through to the 'Budget' category by default.
+    if price < 0:
+        raise ValueError("price must be non-negative")
     if price < 500:
-        return {'color': 'green', 'label': 'Budget (< €500)', 'icon': 'home'}
+        return {'color': 'green', 'label': 'Under €500', 'icon': 'home'}
     elif price < 1000:
-        return {'color': 'blue', 'label': 'Affordable (€500-€1000)', 'icon': 'home'}
+        return {'color': 'blue', 'label': '€500–<€1,000', 'icon': 'home'}
     elif price < 1500:
-        return {'color': 'orange', 'label': 'Mid-range (€1000-€1500)', 'icon': 'home'}
+        return {'color': 'orange', 'label': '€1,000–<€1,500', 'icon': 'home'}
     elif price < 2500:
-        return {'color': 'red', 'label': 'Premium (€1500-€2500)', 'icon': 'star'}
+        return {'color': 'red', 'label': '€1,500–<€2,500', 'icon': 'star'}
     else:
-        return {'color': 'purple', 'label': 'Luxury (€2500+)', 'icon': 'star'}
+        return {'color': 'purple', 'label': '€2,500 or more', 'icon': 'star'}

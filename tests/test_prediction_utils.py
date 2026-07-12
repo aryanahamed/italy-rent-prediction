@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from prediction_utils import (
     PredictionAnalyzer,
     format_confidence_level,
+    format_stability_level,
     format_contribution_text,
 )
 
@@ -206,13 +207,46 @@ class TestCalculateConfidenceScore:
         assert 0 <= conf <= 100
         assert lower <= pred <= upper
 
+    def test_supported_input_changes_recompute_derived_ratios(self):
+        class RecordingModel:
+            feature_names_in_ = np.array([
+                'bathrooms', 'rooms', 'area', 'rooms_per_area', 'baths_per_room'
+            ])
+            feature_importances_ = np.ones(5) / 5
+            n_features_in_ = 5
+            def __init__(self):
+                self.seen = []
+            def predict(self, X):
+                self.seen.extend(np.atleast_2d(X).copy())
+                return np.log1p(np.atleast_2d(X)[:, 2] * 10)
+
+        model = RecordingModel()
+        features = np.array([[1, 2, 80, 2 / 80, 1 / 2]], dtype=float)
+        PredictionAnalyzer(model).calculate_confidence_score(features)
+        for row in model.seen:
+            assert row[3] == pytest.approx(row[1] / row[2])
+            assert row[4] == pytest.approx(row[0] / row[1])
+
+    def test_stability_width_is_calculated_in_euros(self):
+        class AreaModel:
+            feature_names_in_ = np.array(['area'])
+            feature_importances_ = np.array([1.0])
+            n_features_in_ = 1
+            def predict(self, X):
+                return np.log1p(np.atleast_2d(X)[:, 0] * 10)
+
+        _, _, _, stability = PredictionAnalyzer(AreaModel()).calculate_confidence_score(
+            np.array([[100.0]])
+        )
+        assert stability == pytest.approx(90.0)
+
 
 class TestGetFeatureContributions:
     """Tests for get_feature_contributions — covers PU-1, PU-4, PU-6, PU-7."""
 
     def test_returns_list_of_dicts(self):
         model = MockXGBoostModel(n_features=5)
-        analyzer = PredictionAnalyzer(model)
+        analyzer = PredictionAnalyzer(model, feature_medians=np.zeros(5))
         features = np.array([[1, 2, 3, 0, 1]])
         pred = model.predict(features)[0]
         contribs = analyzer.get_feature_contributions(features, pred)
@@ -226,7 +260,7 @@ class TestGetFeatureContributions:
     def test_handles_multi_row_input(self):
         """Uses only first row (PU-4)."""
         model = MockXGBoostModel(n_features=5)
-        analyzer = PredictionAnalyzer(model)
+        analyzer = PredictionAnalyzer(model, feature_medians=np.zeros(5))
         features = np.array([[1, 2, 3, 0, 1], [0, 0, 0, 0, 0]])
         pred = model.predict(features[:1])[0]
         contribs = analyzer.get_feature_contributions(features, pred)
@@ -234,7 +268,7 @@ class TestGetFeatureContributions:
 
     def test_handles_1d_input(self):
         model = MockXGBoostModel(n_features=5)
-        analyzer = PredictionAnalyzer(model)
+        analyzer = PredictionAnalyzer(model, feature_medians=np.zeros(5))
         features = np.array([1, 2, 3, 0, 1])
         pred = model.predict(features.reshape(1, -1))[0]
         contribs = analyzer.get_feature_contributions(features, pred)
@@ -262,20 +296,67 @@ class TestGetFeatureContributions:
         assert 'feature_0' not in raw_names
 
     def test_binary_feature_baseline(self):
-        """Binary features get 0.5 baseline (PU-7)."""
+        """Binary features compare with a clear “not present” reference."""
         model = MockXGBoostModel(n_features=2)
+        model.feature_names_in_ = ['parking_spots', 'balcony']
         analyzer = PredictionAnalyzer(model)
         features = np.array([[1, 0]])
         pred = model.predict(features)[0]
         contribs = analyzer.get_feature_contributions(features, pred)
         for c in contribs:
-            if c['value'] in [0, 1]:
-                assert c['baseline_value'] == 0.5
+            assert c['baseline_value'] == 0.0
+
+    def test_count_feature_with_value_one_gets_zero_baseline(self):
+        """Continuous/count features are omitted without training medians."""
+        model = MockXGBoostModel(n_features=2)
+        model.feature_names_in_ = ['bathrooms', 'rooms']
+        analyzer = PredictionAnalyzer(model)
+        # bathrooms=1, rooms=1 — both count features, neither in BINARY_FEATURE_NAMES
+        features = np.array([[1, 1]])
+        pred = model.predict(features)[0]
+        contribs = analyzer.get_feature_contributions(features, pred)
+        assert contribs == []
+
+    def test_mixed_binary_and_count_features(self):
+        """Binary references use zero and continuous references use supplied medians."""
+        model = MockXGBoostModel(n_features=4)
+        model.feature_names_in_ = ['parking_spots', 'furnished', 'bathrooms', 'rooms']
+        analyzer = PredictionAnalyzer(model, feature_medians=np.array([0, 0, 2, 3]))
+        features = np.array([[1, 1, 1, 1]])  # All values are 1
+        pred = model.predict(features)[0]
+        contribs = analyzer.get_feature_contributions(features, pred)
+        by_name = {c['raw_name']: c for c in contribs}
+
+        # Binary features
+        assert by_name['parking_spots']['baseline_value'] == 0.0
+        assert by_name['furnished']['baseline_value'] == 0.0
+
+        # Count features (value 1, but not truly binary)
+        assert by_name['bathrooms']['baseline_value'] == 2
+        assert by_name['rooms']['baseline_value'] == 3
+
+    def test_binary_feature_with_underscored_name(self):
+        """Underscore variants of binary feature names are also recognized."""
+        model = MockXGBoostModel(n_features=2)
+        model.feature_names_in_ = ['central_heating', 'external_exposure']
+        analyzer = PredictionAnalyzer(model)
+        features = np.array([[1, 0]])
+        pred = model.predict(features)[0]
+        contribs = analyzer.get_feature_contributions(features, pred)
+        for c in contribs:
+            assert c['baseline_value'] == 0.0
+
+    def test_derived_interaction_is_omitted_without_training_reference(self):
+        model = MockXGBoostModel(n_features=1)
+        model.feature_names_in_ = ['Furnished and Central Heating']
+        analyzer = PredictionAnalyzer(model)
+        features = np.array([[1]])
+        assert analyzer.get_feature_contributions(features, model.predict(features)[0]) == []
 
     def test_rf_returns_valid_contributions(self):
         """RF path works without broken tree-threshold logic (PU-1)."""
         model = MockRandomForestModel(n_features=5, n_estimators=5)
-        analyzer = PredictionAnalyzer(model)
+        analyzer = PredictionAnalyzer(model, feature_medians=np.zeros(5))
         features = np.array([[1, 2, 3, 0, 1]])
         pred = model.predict(features)[0]
         contribs = analyzer.get_feature_contributions(features, pred)
@@ -391,6 +472,15 @@ class TestFormatConfidenceLevel:
         assert format_confidence_level(59.9) == 'Low'
 
 
+class TestFormatStabilityLevel:
+    def test_uses_diagnostic_not_certainty_language(self):
+        assert format_stability_level(95) == 'Very Stable'
+        assert format_stability_level(80) == 'Stable'
+        assert format_stability_level(65) == 'Moderately Stable'
+        assert format_stability_level(45) == 'Sensitive'
+        assert format_stability_level(10) == 'Very Sensitive'
+
+
 # =============================================================================
 # format_contribution_text tests — covers PU-11
 # =============================================================================
@@ -407,12 +497,12 @@ class TestFormatContributionText:
 
     def test_adds_rent(self):
         result = format_contribution_text({'feature': 'Balcony', 'contribution_euro': 150})
-        assert 'adds' in result
+        assert 'higher vs reference' in result
         assert '€150' in result
 
     def test_reduces_rent(self):
         result = format_contribution_text({'feature': 'Rooms', 'contribution_euro': -75})
-        assert 'reduces' in result
+        assert 'lower vs reference' in result
         assert '€75' in result
 
     def test_exact_zero(self):
