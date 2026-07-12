@@ -33,6 +33,7 @@ from app_state import (
     store_resolved_location,
     sync_location_query,
 )
+from geocoding import build_photon_params
 from map_data import (
     load_neighborhood_price_data, 
     load_property_cluster_data,
@@ -189,12 +190,7 @@ def geocode_location_level(location_name, country='Italy'):
         headers = {'User-Agent': 'ItalyRentPrediction/1.0 (https://github.com/aryanahamed/italy-rent-prediction)'}
         response = requests.get(
             PHOTON_API_BASE_URL,
-            params={
-                'q': f"{location_name}, {country}",
-                'limit': 1,
-                'countrycode': PHOTON_COUNTRY_CODE,
-                'lang': 'it',
-            },
+            params=build_photon_params(f"{location_name}, {country}", limit=1),
             timeout=5,
             headers=headers,
         )
@@ -223,12 +219,7 @@ if model is not None and analyzer is not None:
         try:
             response = requests.get(
                 PHOTON_API_BASE_URL,
-                params={
-                    'q': address,
-                    'limit': 5,
-                    'countrycode': PHOTON_COUNTRY_CODE,
-                    'lang': 'it',
-                },
+                params=build_photon_params(address, limit=5),
                 timeout=10,
                 headers=headers,
             )
