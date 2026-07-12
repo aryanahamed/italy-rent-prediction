@@ -11,6 +11,7 @@ from config import (
     MIN_BATHROOMS,
     MIN_ROOMS,
 )
+from model_contract import calculate_baths_per_room, calculate_rooms_per_area
 
 warnings.filterwarnings('ignore')
 
@@ -108,9 +109,13 @@ class PredictionAnalyzer:
             rooms_area_idx = name_to_index.get('rooms_per_area')
             baths_room_idx = name_to_index.get('baths_per_room')
             if rooms_area_idx is not None and rooms_idx is not None and area_idx is not None:
-                scenario[0, rooms_area_idx] = scenario[0, rooms_idx] / scenario[0, area_idx]
+                scenario[0, rooms_area_idx] = calculate_rooms_per_area(
+                    scenario[0, rooms_idx], scenario[0, area_idx]
+                )
             if baths_room_idx is not None and bathrooms_idx is not None and rooms_idx is not None:
-                scenario[0, baths_room_idx] = scenario[0, bathrooms_idx] / scenario[0, rooms_idx]
+                scenario[0, baths_room_idx] = calculate_baths_per_room(
+                    scenario[0, bathrooms_idx], scenario[0, rooms_idx]
+                )
             scenarios.append(scenario)
 
         if 'area' in name_to_index:
@@ -267,9 +272,10 @@ class PredictionAnalyzer:
         """
         # Filter out location features for cleaner display (combine their impact)
         # Use prefix-based matching to avoid hardcoded feature name lists
-        non_location = [c for c in contributions 
-                        if not (c['raw_name'].startswith('latitude') or 
-                                c['raw_name'].startswith('longitude'))]
+        non_location = [c for c in contributions
+                        if abs(c['contribution_euro']) >= 1.0 and
+                        not (c['raw_name'].startswith('latitude') or
+                             c['raw_name'].startswith('longitude'))]
         location = [c for c in contributions 
                     if c['raw_name'].startswith('latitude') or 
                        c['raw_name'].startswith('longitude')]
@@ -285,7 +291,8 @@ class PredictionAnalyzer:
                 'contribution_euro': total_location_impact,
                 'contribution_log': sum(c['contribution_log'] for c in location)
             }
-            non_location.append(combined_location)
+            if abs(total_location_impact) >= 1.0:
+                non_location.append(combined_location)
         
         # Sort and return top N
         non_location.sort(key=lambda x: abs(x['contribution_euro']), reverse=True)

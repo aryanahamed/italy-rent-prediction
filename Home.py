@@ -34,6 +34,15 @@ from app_state import (
     sync_location_query,
 )
 from geocoding import build_photon_params
+from model_contract import (
+    ModelContractError,
+    calculate_baths_per_room,
+    calculate_rooms_per_area,
+    load_model_metadata,
+    log_rent_to_euro,
+    validate_model_features,
+    validate_xgboost_runtime,
+)
 from map_data import (
     load_neighborhood_price_data, 
     load_property_cluster_data,
@@ -50,15 +59,22 @@ from feature_utils import (
 def load_model(path='rent_prediction_model/rent_model_v2.pkl'):
     """Load the trained model with comprehensive error handling."""
     try:
+        metadata = load_model_metadata()
+        validate_xgboost_runtime(metadata)
         model = joblib.load(path)
         # Verify model has required attributes
         if not hasattr(model, 'predict'):
             st.error(f"Error: Loaded object from {path} is not a valid model (missing predict method).")
             return None
+        validate_model_features(model)
         return model
     except FileNotFoundError:
         st.error(f"❌ Error: Model file not found at {path}")
         st.info("💡 Please ensure the model file exists in the correct location.")
+        return None
+    except ModelContractError as e:
+        st.error(f"❌ Incompatible prediction runtime: {e}")
+        st.info("Install the versions in requirements.txt and restart the app.")
         return None
     except Exception as e:
         st.error(f"❌ An error occurred while loading the model: {e}")
@@ -98,12 +114,6 @@ def get_binary_value(option):
     """Convert 'Yes'/'No' to binary 1/0."""
     return 1 if option == 'Yes' else 0
 
-def calculate_rooms_per_area(rooms, area):
-    return rooms / area if area > 0 else 0
-
-def calculate_baths_per_room(bathrooms, rooms):
-    return bathrooms / rooms if rooms > 0 else 0
-
 def calculate_amenity_score(balcony, fiber_optic, electric_gate, shared_garden, external_exposure):
     return balcony + fiber_optic + electric_gate + shared_garden + external_exposure
 
@@ -133,9 +143,9 @@ def predict_rent(features):
         log_estimate, log_lower, log_upper, stability_score = analyzer.calculate_confidence_score(features)
         
         # Convert from log space to euro
-        euro_est = np.expm1(log_estimate)
-        lower_bound = np.expm1(log_lower)
-        upper_bound = np.expm1(log_upper)
+        euro_est = log_rent_to_euro(log_estimate, enforce_minimum=True)
+        lower_bound = log_rent_to_euro(log_lower)
+        upper_bound = log_rent_to_euro(log_upper)
         
         # Ensure bounds are non-negative and logical
         lower_bound = max(0, lower_bound)
@@ -529,6 +539,9 @@ if model is not None and analyzer is not None:
 
         st.subheader("🎯 One-Feature Model Sensitivity", anchor=False)
         st.caption("How the model output changes when one supported feature is changed to its reference value.")
+
+        if not top_contributors:
+            st.info("No individual supported feature changed this estimate by at least €1.")
 
         for i, contrib in enumerate(top_contributors, 1):
             contribution_text = format_contribution_text(contrib)
@@ -928,13 +941,6 @@ else:
     st.info("🔧 Prediction features are unavailable because the model could not be loaded.")
 
 if not GEOGRAPHIC_MAPS_ENABLED:
-    st.divider()
-    st.header("📍 Geographic Rental Views", anchor=False)
-    st.info(
-        "Temporarily unavailable. The current location cache is keyed only by neighborhood name, "
-        "which can merge different Italian places with the same name. These maps will return after "
-        "coordinates are rebuilt with city and region context."
-    )
     st.stop()
 
 # NEIGHBORHOOD PRICE HEATMAP SECTION

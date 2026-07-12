@@ -1,0 +1,11 @@
+{
+  "framework": "xgboost",
+  "framework_version": "3.1.1",
+  "supported_framework_range": ">=3.1.1,<4.0.0",
+  "target_transform": "log1p",
+  "feature_count": 36,
+  "derived_features": {
+    "rooms_per_area": "rooms / (area + 1)",
+    "baths_per_room": "bathrooms / (rooms + 1)"
+  }
+}

@@ -30,8 +30,10 @@ streamlit run Home.py
 
 ### Model
 - **Algorithm**: XGBoost Regressor
+- **Artifact/runtime contract**: serialized with XGBoost 3.1.1; runtime constrained to `>=3.1.1,<4.0.0`
 - **Features**: 36 model inputs including location, size, amenities, condition, and derived ratios
 - **Target**: Log-transformed rent price (to handle skewness)
+- **Derived ratios**: `rooms / (area + 1)` and `bathrooms / (rooms + 1)`, matching training
 
 ### Input Stability Diagnostic
 

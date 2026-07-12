@@ -221,11 +221,11 @@ class TestCalculateConfidenceScore:
                 return np.log1p(np.atleast_2d(X)[:, 2] * 10)
 
         model = RecordingModel()
-        features = np.array([[1, 2, 80, 2 / 80, 1 / 2]], dtype=float)
+        features = np.array([[1, 2, 80, 2 / 81, 1 / 3]], dtype=float)
         PredictionAnalyzer(model).calculate_confidence_score(features)
         for row in model.seen:
-            assert row[3] == pytest.approx(row[1] / row[2])
-            assert row[4] == pytest.approx(row[0] / row[1])
+            assert row[3] == pytest.approx(row[1] / (row[2] + 1))
+            assert row[4] == pytest.approx(row[0] / (row[1] + 1))
 
     def test_stability_width_is_calculated_in_euros(self):
         class AreaModel:
@@ -321,6 +321,7 @@ class TestGetFeatureContributions:
         """Binary references use zero and continuous references use supplied medians."""
         model = MockXGBoostModel(n_features=4)
         model.feature_names_in_ = ['parking_spots', 'furnished', 'bathrooms', 'rooms']
+        model.feature_importances_ = np.ones(4) / 4
         analyzer = PredictionAnalyzer(model, feature_medians=np.array([0, 0, 2, 3]))
         features = np.array([[1, 1, 1, 1]])  # All values are 1
         pred = model.predict(features)[0]
@@ -413,6 +414,13 @@ class TestGetTopContributors:
         top = PredictionAnalyzer.get_top_contributors(None, contributions, top_n=5)
         combined = [c for c in top if c['raw_name'] == 'location_combined']
         assert len(combined) == 1
+
+    def test_omits_sub_euro_noise(self):
+        contributions = [
+            {'feature': 'A', 'raw_name': 'a', 'contribution_euro': 0.99, 'importance': 1.0},
+            {'feature': 'B', 'raw_name': 'b', 'contribution_euro': -0.25, 'importance': 1.0},
+        ]
+        assert PredictionAnalyzer.get_top_contributors(None, contributions) == []
 
 
 class TestFormatFeatureName:
